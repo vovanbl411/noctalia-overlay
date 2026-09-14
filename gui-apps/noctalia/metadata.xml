@@ -1,0 +1,10 @@
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+	<upstream>
+		<doc>https://docs.noctalia.dev/</doc>
+		<remote-id type="github">noctalia-dev/noctalia</remote-id>
+	</upstream>
+	<longdescription>
+		Noctalia is a sleek, customizable desktop shell for Wayland.
+	</longdescription>
+</pkgmetadata>
