@@ -3,8 +3,8 @@ name: Prepare Noctalia release
 
 on:
   schedule:
-    # 06:00 UTC: avoid the top-of-hour Actions load peak.
-    - cron: "00 6 * * *"
+    # 06:17 UTC: avoid the top-of-hour Actions load peak.
+    - cron: "17 6 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -106,7 +106,7 @@ jobs:
                 ebuild "/overlay/gui-apps/noctalia/noctalia-${RELEASE_TAG#v}.ebuild" manifest
               fi
               emerge --oneshot app-portage/pkgcheck
-              pkgcheck scan
+              pkgcheck scan --exit
               chown -R "$OVERLAY_UID:$OVERLAY_GID" /overlay
             '
 

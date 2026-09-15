@@ -74,7 +74,7 @@ doas emerge -pv gui-apps/noctalia
 
 Workflow
 [Prepare Noctalia release](.github/workflows/noctalia-release-watcher.yml)
-запускается ежедневно в 06:00 UTC и вручную через `workflow_dispatch`.
+запускается ежедневно в 06:17 UTC и вручную через `workflow_dispatch`.
 Процесс выглядит так:
 
 ```text
@@ -100,7 +100,7 @@ candidate becomes current, previous current becomes fallback
 [`scripts/prepare_noctalia_release.py`](scripts/prepare_noctalia_release.py)
 создаёт candidate ebuild копированием current, удаляет прежний fallback и
 обновляет таблицу версий выше. После этого workflow в закреплённом Gentoo
-container пересоздаёт Manifest, запускает `pkgcheck scan` и открывает Draft PR.
+container пересоздаёт Manifest, запускает `pkgcheck scan --exit` и открывает Draft PR.
 В PR отдельно показано, менялись ли upstream `PACKAGING.md`, `meson.build` и
 `meson_options.txt`.
 
@@ -111,6 +111,14 @@ Workflow использует встроенный `GITHUB_TOKEN` только �
 пользовательскую машину. GitHub может задержать scheduled run; в публичном
 репозитории расписание отключается после 60 дней без активности. В обоих
 случаях workflow можно запустить вручную.
+
+Чтобы workflow мог создавать Draft PR, владелец repository должен включить
+`Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests`.
+Этот параметр workflow не изменяет.
+
+Gentoo Docker images закреплены по SHA256 digest. Dependabot обновляет только
+GitHub Actions, поэтому эти digest нужно периодически проверять и обновлять
+вручную.
 
 Скрипты используют только стандартную библиотеку Python. Unit-тесты в
 `tests/` не требуют доступа к GitHub; `pkgcheck` и Manifest проверяются в CI.
