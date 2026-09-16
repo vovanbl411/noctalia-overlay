@@ -47,6 +47,14 @@ def write_watcher_result(path: Path) -> None:
                     "tag": "v5.2.0",
                     "url": "https://github.com/noctalia-dev/noctalia/releases/tag/v5.2.0",
                 },
+                "provenance": {
+                    "tag": "v5.2.0",
+                    "tag_object_sha": "b" * 40,
+                    "target_commit_sha": "c" * 40,
+                    "signature_verified": True,
+                    "verification_reason": "valid",
+                    "verified_at": "2026-09-16T12:34:56Z",
+                },
                 "packaging_changes": {
                     "packaging_md": "modified",
                     "meson_build": "unchanged",
@@ -112,6 +120,20 @@ class ReleaseHandoffTests(unittest.TestCase):
         )
         self.assertFalse(
             (self.fresh_checkout / "gui-apps" / "noctalia" / "noctalia-5.0.1.ebuild").exists()
+        )
+        self.assertEqual(handoff.provenance.target_commit_sha, "c" * 40)
+
+    def test_draft_pull_request_contains_verified_provenance(self) -> None:
+        handoff_root = self.create_handoff()
+        handoff = HANDOFF.validate_handoff(handoff_root)
+
+        body = HANDOFF.draft_pull_request_body(handoff)
+
+        self.assertIn("OpenPGP signature: verified by GitHub", body)
+        self.assertIn(f"Tag object: `{'b' * 40}`", body)
+        self.assertIn(
+            "Review upstream provenance/signing identity if anything looks unusual.",
+            body,
         )
 
     def test_rejects_handoff_for_a_different_main_commit(self) -> None:
@@ -180,6 +202,35 @@ class ReleaseHandoffTests(unittest.TestCase):
         handoff_root = self.create_handoff()
         metadata = self.load_metadata(handoff_root)
         metadata["fallback_version"] = "not-a-version"
+        self.write_metadata(handoff_root, metadata)
+
+        with self.assertRaises(HANDOFF.HandoffError):
+            HANDOFF.validate_handoff(handoff_root)
+
+    def test_rejects_missing_or_malformed_provenance(self) -> None:
+        handoff_root = self.create_handoff()
+        metadata = self.load_metadata(handoff_root)
+        del metadata["provenance"]
+        self.write_metadata(handoff_root, metadata)
+
+        with self.assertRaises(HANDOFF.HandoffError):
+            HANDOFF.validate_handoff(handoff_root)
+
+        handoff_root = self.root / "malformed-provenance"
+        HANDOFF.create_handoff(
+            self.source,
+            handoff_root,
+            self.watcher_result,
+            release_tag="v5.2.0",
+            base_commit="a" * 40,
+            removed=(5, 0, 1),
+            fallback=(5, 1, 0),
+            candidate=(5, 2, 0),
+        )
+        metadata = self.load_metadata(handoff_root)
+        provenance = metadata["provenance"]
+        assert isinstance(provenance, dict)
+        provenance["target_commit_sha"] = "bad"
         self.write_metadata(handoff_root, metadata)
 
         with self.assertRaises(HANDOFF.HandoffError):

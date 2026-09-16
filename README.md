@@ -65,8 +65,10 @@ doas emerge -pv gui-apps/noctalia
 Перед merge Draft PR:
 
 1. Убедиться, что release имеет стабильный тег `vX.Y.Z`; prerelease и `main` не
-   используются.
-2. Проверить release notes, подпись тега и изменения `PACKAGING.md` у upstream.
+   используются. Automation до подготовки candidate проверяет, что tag
+   annotated и его OpenPGP signature подтверждена GitHub.
+2. Проверить release notes, provenance/signing identity при необычных признаках
+   и изменения `PACKAGING.md` у upstream.
 3. Проверить сгенерированные ebuild и Manifest, результат `pkgcheck scan` и
    выполнить `doas emerge -pv gui-apps/noctalia`.
 4. Установить candidate из ветки PR и проверить обычную Niri-сессию.
@@ -83,11 +85,11 @@ Workflow
 ```text
 upstream release
       ↓
-scheduled watcher
+signed annotated tag verification
+      ↓
+packaging diff
       ↓
 Draft PR
-      ↓
-automated checks
       ↓
 manual review + Niri test
       ↓

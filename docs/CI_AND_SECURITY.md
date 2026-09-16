@@ -111,13 +111,16 @@ release-handoff/
 
 `release.json` содержит schema version, base commit, stable release tag,
 candidate/fallback/removed versions, deterministic branch и PR title, URL
-релиза и metadata изменений packaging files. Пути не передаются как данные:
-они строятся из уже проверенных версий.
+релиза, metadata изменений packaging files и минимальную provenance metadata:
+tag object SHA, target commit SHA, статус и причину verification, а также
+`verified_at`, если GitHub его сообщил. Пути не передаются как данные: они
+строятся из уже проверенных версий.
 
 `publish` считает artifact недоверенным input. Перед применением он проверяет
 точный список файлов и директорий, regular-file type, отсутствие symlinks и
-special files, размер файлов, JSON schema, версии, URL, branch и PR title.
-Неожиданное поле, файл, ссылка или несоответствие версий завершают job.
+special files, размер файлов, JSON schema, версии, URL, branch, PR title и
+provenance. Неожиданное поле, файл, ссылка или несоответствие версий завершают
+job.
 
 Затем `publish` сравнивает base commit с fresh checkout `main`, применяет
 только `README.md`, `Manifest` и candidate ebuild, удаляет только ebuild,
@@ -205,10 +208,28 @@ GitHub Secret Scanning и Push Protection рекомендуется включ�
 
 ## Доверие к upstream Noctalia
 
-Automation принимает только stable tags `vX.Y.Z`, отвергает prerelease и
-показывает изменения `PACKAGING.md`, `meson.build` и `meson_options.txt`.
-Release notes, upstream tag и signature остаются обязательной ручной
-проверкой перед merge. Automation не выполняет OpenPGP verification.
+Automation принимает только stable tags `vX.Y.Z`, отвергает prerelease и до
+rotation запрашивает GitHub Git Database API. Для candidate требуется
+annotated tag: ref должен указывать на tag object, tag object — на commit, а
+все Git object SHA должны быть полными 40-символьными lowercase SHA.
 
-Automatic OpenPGP verification планируется отдельным следующим этапом
-hardening.
+GitHub должен сообщить `verification.verified: true` и
+`verification.reason: valid`. Automation также проверяет OpenPGP armored
+signature и canonical header lines signed payload: `object <commit>`, `type
+commit`, `tag <release-tag>`. Lightweight tags, unsigned tags, противоречивые
+payload и любой malformed response отклоняются до container, artifact, branch
+и Draft PR.
+
+Для packaging diff проверяются как candidate tag, так и tag текущей packaged
+версии. Файлы `PACKAGING.md`, `meson.build` и `meson_options.txt` сравниваются
+по verified immutable commit SHA, а не по mutable tag name. Provenance видна в
+workflow summary и Draft PR без signature block или tag message.
+
+Эта модель доверяет результату проверки GitHub. Оверлей пока не выполняет
+независимую OpenPGP verification и не закрепляет fingerprint ключа maintainer.
+Manual review release notes и signing identity остаётся обязательной, если
+provenance выглядит необычно.
+
+Следующий отдельный этап hardening — independent cryptographic verification,
+trusted signer fingerprint pinning и затем Portage-side verification на Gentoo
+машине.
