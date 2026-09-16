@@ -198,10 +198,18 @@ def release_details_from_watch_result(path: Path, tag: str) -> tuple[str, dict[s
 def write_github_output(path: Path, result: PrepareResult) -> None:
     """Write simple workflow outputs without exposing untrusted values to shell."""
     has_rotation = result.rotation is not None
-    lines = (
+    lines = [
         f"prepared={'true' if has_rotation else 'false'}",
         f"outcome={result.outcome}",
-    )
+    ]
+    if result.rotation is not None:
+        lines.extend(
+            (
+                f"removed_version={version_text(result.rotation.removed)}",
+                f"fallback_version={version_text(result.rotation.fallback)}",
+                f"candidate_version={version_text(result.rotation.candidate)}",
+            )
+        )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

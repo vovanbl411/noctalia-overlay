@@ -21,6 +21,9 @@ fallback удаляется. До merge `main` не меняется.
 Оверлей наследует eclass'ы из основного репозитория Gentoo. Для Noctalia
 сохраняется `KEYWORDS="~amd64"`, действующая запись `gui-apps/noctalia ~amd64` в `package.accept_keywords` остаётся нужна.
 
+Подробная схема CI, branch protection и repository security settings описана в
+[`docs/CI_AND_SECURITY.md`](docs/CI_AND_SECURITY.md).
+
 ## Подключение и синхронизация
 
 Файл: `/etc/portage/repos.conf/noctalia-overlay.conf`
@@ -106,11 +109,12 @@ container пересоздаёт Manifest, запускает `pkgcheck scan --e
 
 Параметр `dry_run` выполняет discovery, policy и расчёт будущей rotation,
 записывает summary, но не изменяет workspace, не создаёт branch, commit или PR.
-Workflow использует встроенный `GITHUB_TOKEN` только с `contents: write` и
-`pull-requests: write`. Он не выполняет auto-merge и не устанавливает пакет на
-пользовательскую машину. GitHub может задержать scheduled run; в публичном
-репозитории расписание отключается после 60 дней без активности. В обоих
-случаях workflow можно запустить вручную.
+Read-only job `prepare` не имеет write permissions. Write permissions
+`contents: write` и `pull-requests: write` получает только `publish` после
+успешной подготовки минимального release artifact. Он не выполняет auto-merge
+и не устанавливает пакет на пользовательскую машину. GitHub может задержать
+scheduled run; в публичном репозитории расписание отключается после 60 дней
+без активности. В обоих случаях workflow можно запустить вручную.
 
 Чтобы workflow мог создавать Draft PR, владелец repository должен включить
 `Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests`.
