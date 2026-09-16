@@ -24,17 +24,16 @@ def create_overlay(root: Path) -> None:
         (package_dir / f"noctalia-{version}.ebuild").write_text(
             f"# {version}\n", encoding="utf-8"
         )
-    (root / "README.md").write_text(
-        "\n".join(
-            (
-                "<!-- noctalia-versions:start -->",
-                "| `gui-apps/noctalia-5.1.0` | Current |",
-                "| `gui-apps/noctalia-5.0.1` | Fallback |",
-                "<!-- noctalia-versions:end -->",
-            )
-        ),
-        encoding="utf-8",
+    readme = "\n".join(
+        (
+            "<!-- noctalia-versions:start -->",
+            "| `gui-apps/noctalia-5.1.0` | Current |",
+            "| `gui-apps/noctalia-5.0.1` | Fallback |",
+            "<!-- noctalia-versions:end -->",
+        )
     )
+    for readme_name in ("README.md", "README.en.md"):
+        (root / readme_name).write_text(readme, encoding="utf-8")
 
 
 class PrepareNoctaliaReleaseTests(unittest.TestCase):
@@ -64,6 +63,9 @@ class PrepareNoctaliaReleaseTests(unittest.TestCase):
         )
         self.assertIn("noctalia-5.2.0", (self.root / "README.md").read_text(encoding="utf-8"))
         self.assertIn("noctalia-5.1.0", (self.root / "README.md").read_text(encoding="utf-8"))
+        english_readme = (self.root / "README.en.md").read_text(encoding="utf-8")
+        self.assertIn("| Package | Purpose |", english_readme)
+        self.assertIn("noctalia-5.2.0", english_readme)
 
     def test_dry_run_does_not_change_files(self) -> None:
         before = {

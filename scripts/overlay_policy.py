@@ -16,6 +16,21 @@ VERSION_BLOCK_PATTERN = re.compile(
     re.DOTALL,
 )
 README_VERSION_PATTERN = re.compile(r"`gui-apps/noctalia-(\d+\.\d+\.\d+)`")
+README_PATHS = ("README.md", "README.en.md")
+README_TABLE_LABELS = {
+    "README.md": (
+        "Пакет",
+        "Назначение",
+        "Текущий стабильный релиз",
+        "Предыдущая версия для отката",
+    ),
+    "README.en.md": (
+        "Package",
+        "Purpose",
+        "Current stable release",
+        "Previous release for rollback",
+    ),
+}
 
 
 class OverlayPolicyError(RuntimeError):
@@ -75,19 +90,22 @@ def overlay_state(repository_root: Path) -> OverlayState:
     return OverlayState(fallback=ebuilds[0], current=ebuilds[1])
 
 
-def rendered_version_block(state: OverlayState) -> str:
-    """Render the README fragment that documents the packaged versions."""
+def rendered_version_block(state: OverlayState, readme_name: str) -> str:
+    """Render the version table for a supported localized README."""
+    labels = README_TABLE_LABELS.get(readme_name)
+    if labels is None:
+        raise OverlayPolicyError(f"Unsupported localized README: {readme_name}.")
     return "\n".join(
         (
             "<!-- noctalia-versions:start -->",
-            "| Пакет | Назначение |",
+            f"| {labels[0]} | {labels[1]} |",
             "| --- | --- |",
             "| "
             f"`gui-apps/noctalia-{version_text(state.current.version)}` "
-            "| Текущий стабильный релиз |",
+            f"| {labels[2]} |",
             "| "
             f"`gui-apps/noctalia-{version_text(state.fallback.version)}` "
-            "| Предыдущая версия для отката |",
+            f"| {labels[3]} |",
             "<!-- noctalia-versions:end -->",
         )
     )
@@ -106,13 +124,14 @@ def readme_matches_state(readme_path: Path, state: OverlayState) -> bool:
 
 
 def validate_overlay(repository_root: Path) -> OverlayState:
-    """Validate both ebuild policy and the README's version table."""
+    """Validate the ebuild policy and localized README version tables."""
     state = overlay_state(repository_root)
-    readme_path = repository_root / "README.md"
-    if not readme_matches_state(readme_path, state):
-        raise OverlayPolicyError(
-            "README.md does not match the current/fallback Noctalia ebuilds."
-        )
+    for readme_name in README_PATHS:
+        readme_path = repository_root / readme_name
+        if not readme_matches_state(readme_path, state):
+            raise OverlayPolicyError(
+                f"{readme_name} does not match the current/fallback Noctalia ebuilds."
+            )
     return state
 
 
@@ -120,7 +139,7 @@ def update_readme_versions(readme_path: Path, state: OverlayState) -> None:
     """Replace the dedicated README version table with the supplied state."""
     text = readme_path.read_text(encoding="utf-8")
     replacement, count = VERSION_BLOCK_PATTERN.subn(
-        rendered_version_block(state), text
+        rendered_version_block(state, readme_path.name), text
     )
     if count != 1:
         raise OverlayPolicyError(

@@ -26,19 +26,18 @@ PGP_SIGNATURE = "-----BEGIN PGP SIGNATURE-----\nsynthetic\n-----END PGP SIGNATUR
 
 
 def write_readme(repository_root: Path, current: str, fallback: str) -> None:
-    (repository_root / "README.md").write_text(
-        "\n".join(
-            (
-                "<!-- noctalia-versions:start -->",
-                "| Package | Purpose |",
-                "| --- | --- |",
-                f"| `gui-apps/noctalia-{current}` | Current |",
-                f"| `gui-apps/noctalia-{fallback}` | Fallback |",
-                "<!-- noctalia-versions:end -->",
-            )
-        ),
-        encoding="utf-8",
+    readme = "\n".join(
+        (
+            "<!-- noctalia-versions:start -->",
+            "| Package | Purpose |",
+            "| --- | --- |",
+            f"| `gui-apps/noctalia-{current}` | Current |",
+            f"| `gui-apps/noctalia-{fallback}` | Fallback |",
+            "<!-- noctalia-versions:end -->",
+        )
     )
+    for readme_name in ("README.md", "README.en.md"):
+        (repository_root / readme_name).write_text(readme, encoding="utf-8")
 
 
 def tag_ref(tag: str, tag_object_sha: str, *, object_type: str = "tag") -> dict:

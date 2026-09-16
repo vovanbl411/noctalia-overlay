@@ -221,6 +221,7 @@ jobs:
           git diff --check
           expected_changes="$(printf '%s\n' \
             README.md \
+            README.en.md \
             gui-apps/noctalia/Manifest \
             "gui-apps/noctalia/noctalia-${CANDIDATE_VERSION}.ebuild" \
             "gui-apps/noctalia/noctalia-${REMOVED_VERSION}.ebuild" | LC_ALL=C sort)"
@@ -237,7 +238,7 @@ jobs:
           git switch --create "$BRANCH"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md gui-apps/noctalia
+          git add README.md README.en.md gui-apps/noctalia
           git diff --cached --check
           git diff --cached --quiet && exit 1
           git commit -m "update: Noctalia ${RELEASE_TAG}"

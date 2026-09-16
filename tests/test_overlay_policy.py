@@ -19,17 +19,16 @@ def create_overlay(root: Path, versions: tuple[str, ...], *, readme_versions: tu
     for version in versions:
         (package_dir / f"noctalia-{version}.ebuild").touch()
     current, fallback = readme_versions
-    (root / "README.md").write_text(
-        "\n".join(
-            (
-                "<!-- noctalia-versions:start -->",
-                f"| `gui-apps/noctalia-{current}` | Current |",
-                f"| `gui-apps/noctalia-{fallback}` | Fallback |",
-                "<!-- noctalia-versions:end -->",
-            )
-        ),
-        encoding="utf-8",
+    readme = "\n".join(
+        (
+            "<!-- noctalia-versions:start -->",
+            f"| `gui-apps/noctalia-{current}` | Current |",
+            f"| `gui-apps/noctalia-{fallback}` | Fallback |",
+            "<!-- noctalia-versions:end -->",
+        )
     )
+    for readme_name in ("README.md", "README.en.md"):
+        (root / readme_name).write_text(readme, encoding="utf-8")
 
 
 class OverlayPolicyTests(unittest.TestCase):
@@ -77,6 +76,19 @@ class OverlayPolicyTests(unittest.TestCase):
 
     def test_policy_rejects_readme_that_contradicts_ebuilds(self) -> None:
         create_overlay(self.root, ("5.0.1", "5.1.0"), readme_versions=("5.2.0", "5.1.0"))
+
+        with self.assertRaises(OverlayPolicyError):
+            validate_overlay(self.root)
+
+    def test_policy_rejects_english_readme_that_contradicts_ebuilds(self) -> None:
+        create_overlay(self.root, ("5.0.1", "5.1.0"), readme_versions=("5.1.0", "5.0.1"))
+        (self.root / "README.en.md").write_text(
+            "<!-- noctalia-versions:start -->\n"
+            "| `gui-apps/noctalia-5.2.0` | Current |\n"
+            "| `gui-apps/noctalia-5.1.0` | Fallback |\n"
+            "<!-- noctalia-versions:end -->\n",
+            encoding="utf-8",
+        )
 
         with self.assertRaises(OverlayPolicyError):
             validate_overlay(self.root)

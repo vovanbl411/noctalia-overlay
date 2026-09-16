@@ -1,5 +1,7 @@
 # CI и модель безопасности
 
+[English](CI_AND_SECURITY.en.md)
+
 ## Модель CI
 
 В репозитории есть два независимых workflow.
@@ -101,6 +103,7 @@ commit SHA. Artifact хранится около 30 дней.
 release-handoff/
   release.json
   README.md
+  README.en.md
   gui-apps/noctalia/Manifest
   gui-apps/noctalia/noctalia-X.Y.Z.ebuild
 ```
@@ -119,7 +122,7 @@ provenance. Неожиданное поле, файл, ссылка или не�
 job.
 
 Затем `publish` сравнивает base commit с fresh checkout `main`, применяет
-только `README.md`, `Manifest` и candidate ebuild, удаляет только ebuild,
+только `README.md`, `README.en.md`, `Manifest` и candidate ebuild, удаляет только ebuild,
 построенный из validated removed version, повторно проверяет overlay policy,
 выполняет `git diff --check` и сверяет точный allowlist diff. Поэтому artifact
 не может изменить `.github/`, `scripts/`, `tests/`, `metadata/`, `profiles/`,
