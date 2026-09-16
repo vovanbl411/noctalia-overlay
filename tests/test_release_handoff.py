@@ -134,6 +134,23 @@ class ReleaseHandoffTests(unittest.TestCase):
         self.assertFalse((destination / ".git").exists())
         self.assertTrue((destination / "README.md").is_file())
 
+    def test_container_integrity_allows_only_manifest_change(self) -> None:
+        baseline = self.root / "before-container.json"
+        HANDOFF.write_workspace_integrity(self.source, baseline)
+        (self.source / "gui-apps" / "noctalia" / "Manifest").write_text(
+            "DIST updated 1 BLAKE2B deadbeef\n", encoding="utf-8"
+        )
+
+        HANDOFF.verify_workspace_integrity(self.source, baseline)
+
+    def test_container_integrity_rejects_non_manifest_change(self) -> None:
+        baseline = self.root / "before-container.json"
+        HANDOFF.write_workspace_integrity(self.source, baseline)
+        (self.source / "README.md").write_text("changed\n", encoding="utf-8")
+
+        with self.assertRaises(HANDOFF.HandoffError):
+            HANDOFF.verify_workspace_integrity(self.source, baseline)
+
     def test_rejects_unexpected_file(self) -> None:
         handoff_root = self.create_handoff()
         (handoff_root / "unexpected.txt").write_text("unexpected", encoding="utf-8")

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -29,6 +30,7 @@ from overlay_policy import (  # noqa: E402
 
 HANDOFF_SCHEMA_VERSION = 1
 MAX_HANDOFF_FILE_SIZE = 1024 * 1024
+MANIFEST_PATH = "gui-apps/noctalia/Manifest"
 PACKAGING_CHANGE_VALUES = frozenset({"modified", "unchanged", "not present"})
 PACKAGING_CHANGE_KEYS = frozenset(
     {"packaging_md", "meson_build", "meson_options"}
@@ -66,7 +68,7 @@ def handoff_file_paths(candidate: Version) -> frozenset[str]:
         {
             "release.json",
             "README.md",
-            "gui-apps/noctalia/Manifest",
+            MANIFEST_PATH,
             version_path(candidate),
         }
     )
@@ -281,6 +283,101 @@ def copy_sanitized_workspace(source: Path, destination: Path) -> None:
         raise HandoffError("Sanitized workspace contains .git.")
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+    except OSError as error:
+        raise HandoffError(f"Unable to hash workspace entry {path.name}.") from error
+    return digest.hexdigest()
+
+
+def workspace_integrity(workspace: Path) -> dict[str, dict[str, int | str]]:
+    """Return a complete, link-free content and mode snapshot of a workspace."""
+    _require_directory(workspace, "Sanitized workspace")
+    entries: dict[str, dict[str, int | str]] = {}
+
+    def visit(directory: Path, relative: Path) -> None:
+        for child in directory.iterdir():
+            child_relative = relative / child.name
+            child_name = child_relative.as_posix()
+            metadata = _lstat(child, f"Workspace entry {child_name}")
+            mode = stat.S_IMODE(metadata.st_mode)
+            if stat.S_ISDIR(metadata.st_mode):
+                entries[child_name] = {"kind": "directory", "mode": mode}
+                visit(child, child_relative)
+            elif stat.S_ISREG(metadata.st_mode):
+                entries[child_name] = {
+                    "kind": "file",
+                    "mode": mode,
+                    "sha256": _sha256(child),
+                }
+            else:
+                raise HandoffError(
+                    f"Workspace entry {child_name} must be a regular file or directory."
+                )
+
+    visit(workspace, Path())
+    if ".git" in entries or any(path.startswith(".git/") for path in entries):
+        raise HandoffError("Sanitized workspace contains .git.")
+    return entries
+
+
+def write_workspace_integrity(workspace: Path, output: Path) -> None:
+    """Write the pre-container snapshot outside the container mount."""
+    output.write_text(
+        json.dumps({"entries": workspace_integrity(workspace)}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _parse_workspace_integrity(value: object) -> dict[str, dict[str, int | str]]:
+    if not isinstance(value, dict) or set(value) != {"entries"}:
+        raise HandoffError("Workspace integrity snapshot is invalid.")
+    entries = value["entries"]
+    if not isinstance(entries, dict):
+        raise HandoffError("Workspace integrity entries are invalid.")
+    parsed: dict[str, dict[str, int | str]] = {}
+    for path, entry in entries.items():
+        if not isinstance(path, str) or not isinstance(entry, dict):
+            raise HandoffError("Workspace integrity entry is invalid.")
+        kind = entry.get("kind")
+        mode = entry.get("mode")
+        expected_fields = {"kind", "mode"}
+        if kind == "file":
+            expected_fields.add("sha256")
+        if (
+            kind not in {"file", "directory"}
+            or type(mode) is not int
+            or mode < 0
+            or mode > 0o777
+            or set(entry) != expected_fields
+        ):
+            raise HandoffError("Workspace integrity entry is invalid.")
+        if kind == "file":
+            sha256 = entry["sha256"]
+            if not isinstance(sha256, str) or re.fullmatch(r"[0-9a-f]{64}", sha256) is None:
+                raise HandoffError("Workspace integrity file digest is invalid.")
+        parsed[path] = dict(entry)
+    return parsed
+
+
+def verify_workspace_integrity(workspace: Path, baseline_path: Path) -> None:
+    """Fail unless the container changed content or mode only for Manifest."""
+    _require_regular_file(baseline_path, "Workspace integrity snapshot")
+    baseline = _parse_workspace_integrity(
+        _load_json(baseline_path, "workspace integrity snapshot")
+    )
+    after = workspace_integrity(workspace)
+    if set(after) != set(baseline):
+        raise HandoffError("Container added or removed a workspace entry.")
+    for path, before_entry in baseline.items():
+        if path != MANIFEST_PATH and after[path] != before_entry:
+            raise HandoffError(f"Container changed unexpected workspace entry {path}.")
+
+
 def _watch_result_details(path: Path, release_tag: str) -> tuple[str, dict[str, str]]:
     _require_regular_file(path, "Watcher result")
     payload = _load_json(path, "watcher result")
@@ -481,6 +578,14 @@ def main() -> int:
     eligibility_parser.add_argument("--dry-run", action="store_true")
     eligibility_parser.add_argument("--github-output", type=Path, required=True)
 
+    snapshot_parser = subparsers.add_parser("snapshot-workspace")
+    snapshot_parser.add_argument("--workspace", type=Path, required=True)
+    snapshot_parser.add_argument("--output", type=Path, required=True)
+
+    verify_parser = subparsers.add_parser("verify-workspace")
+    verify_parser.add_argument("--workspace", type=Path, required=True)
+    verify_parser.add_argument("--baseline", type=Path, required=True)
+
     create_parser = subparsers.add_parser("create")
     create_parser.add_argument("--source-root", type=Path, required=True)
     create_parser.add_argument("--destination", type=Path, required=True)
@@ -507,6 +612,10 @@ def main() -> int:
             args.github_output.write_text(
                 f"publish_ready={'true' if ready else 'false'}\n", encoding="utf-8"
             )
+        elif args.command == "snapshot-workspace":
+            write_workspace_integrity(args.workspace, args.output)
+        elif args.command == "verify-workspace":
+            verify_workspace_integrity(args.workspace, args.baseline)
         elif args.command == "create":
             create_handoff(
                 args.source_root,

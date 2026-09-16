@@ -85,6 +85,11 @@ emerge --oneshot dev-util/pkgcheck
 pkgcheck scan --exit
 ```
 
+До запуска container сохраняется полный снимок содержимого и режимов
+sanitized workspace. После его завершения workflow сверяет снимок: измениться
+может только `gui-apps/noctalia/Manifest`; добавление, удаление или изменение
+любого другого файла либо каталога завершает подготовку до создания artifact.
+
 Если Manifest generation или `pkgcheck` завершается ошибкой, `publish` не
 запускается.
 
