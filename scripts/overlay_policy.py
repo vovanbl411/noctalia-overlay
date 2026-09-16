@@ -70,6 +70,8 @@ def overlay_state(repository_root: Path) -> OverlayState:
             "Expected exactly two stable Noctalia ebuilds, "
             f"found {len(ebuilds)}."
         )
+    # stable_ebuilds() сортирует семантические версии, поэтому этот порядок
+    # задаёт политику двух версий и не зависит от порядка обхода файловой системы.
     return OverlayState(fallback=ebuilds[0], current=ebuilds[1])
 
 

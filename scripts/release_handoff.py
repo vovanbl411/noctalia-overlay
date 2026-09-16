@@ -125,6 +125,8 @@ def _collect_artifact_files(root: Path) -> tuple[dict[str, Path], set[str]]:
     files: dict[str, Path] = {}
     directories: set[str] = set()
 
+    # Не доверяем распаковке архива: lstat не позволяет ссылкам и special files
+    # перенаправить publish за пределы ожидаемого дерева artifact.
     def visit(directory: Path, relative: Path) -> None:
         for child in directory.iterdir():
             child_relative = relative / child.name
@@ -214,6 +216,8 @@ def _parse_provenance(value: object, release_tag: str) -> UpstreamProvenance:
         raise HandoffError("Handoff provenance has unexpected fields.")
     if value["tag"] != release_tag:
         raise HandoffError("Handoff provenance tag does not match the release tag.")
+    # Artifact — недоверенный input. Сохраняем точные условия принятия watcher,
+    # а не считаем verification любое непустое status-значение.
     if value["signature_verified"] is not True:
         raise HandoffError("Handoff provenance signature is not verified.")
     if value["verification_reason"] != "valid":
@@ -325,6 +329,8 @@ def copy_sanitized_workspace(source: Path, destination: Path) -> None:
 
     def copy_directory(source_directory: Path, destination_directory: Path) -> None:
         for child in source_directory.iterdir():
+            # Container нужен writable overlay, но не Git metadata и не
+            # credentials, которые checkout хранит в .git рабочей директории.
             if source_directory == source and child.name == ".git":
                 continue
             metadata = _lstat(child, f"Checkout entry {child.name}")
@@ -434,6 +440,8 @@ def verify_workspace_integrity(workspace: Path, baseline_path: Path) -> None:
     after = workspace_integrity(workspace)
     if set(after) != set(baseline):
         raise HandoffError("Container added or removed a workspace entry.")
+    # Manifest генерируется в container. Каждый иной path, включая содержимое и
+    # mode bits, обязан совпадать со snapshot до запуска container.
     for path, before_entry in baseline.items():
         if path != MANIFEST_PATH and after[path] != before_entry:
             raise HandoffError(f"Container changed unexpected workspace entry {path}.")
@@ -470,6 +478,8 @@ def create_handoff(
     """Create a minimal artifact from the verified, sanitized release workspace."""
     if destination.exists():
         raise HandoffError("Handoff destination already exists.")
+    # Повторно проверяем дерево после container до упаковки межjob artifact.
+    # Благодаря этому publish не зависит от рабочей директории prepare.
     state = validate_overlay(source_root)
     if state.fallback.version != fallback or state.current.version != candidate:
         raise HandoffError("Prepared overlay does not match the intended rotation.")
@@ -538,6 +548,8 @@ def apply_handoff(
     handoff_root: Path, repository_root: Path, *, expected_base_commit: str | None = None
 ) -> ReleaseHandoff:
     """Apply exactly the validated release files to a fresh checkout of main."""
+    # Publish начинает с fresh checkout и считает скачанный artifact враждебным,
+    # пока не проверит его schema, paths и provenance.
     handoff = validate_handoff(handoff_root)
     if expected_base_commit is not None and handoff.base_commit != _parse_commit(
         expected_base_commit, "expected_base_commit"

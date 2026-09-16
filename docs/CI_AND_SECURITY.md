@@ -1,9 +1,5 @@
 # CI и модель безопасности
 
-Этот документ описывает CI, хранимый в репозитории, и настройки GitHub,
-которые владелец задаёт вручную. Файлы в Git не применяют GitHub Settings
-автоматически.
-
 ## Модель CI
 
 В репозитории есть два независимых workflow.
@@ -230,6 +226,13 @@ workflow summary и Draft PR без signature block или tag message.
 Manual review release notes и signing identity остаётся обязательной, если
 provenance выглядит необычно.
 
-Следующий отдельный этап hardening — independent cryptographic verification,
-trusted signer fingerprint pinning и затем Portage-side verification на Gentoo
-машине.
+Следующий отдельный этап hardening — независимая локальная OpenPGP verification.
+Для него в repository добавят trusted upstream public key и закрепят его полный
+fingerprint. Local GPG helper будет проверять fingerprint импортированного key,
+exact signature и signed payload уже полученного tag, не разрешая network key
+retrieval. GitHub verification сохранится второй обязательной проверкой.
+
+После успешной локальной проверки handoff будет содержать
+`local_signature_verified: true` и полный `signer_fingerprint`; оба поля будут
+показаны в workflow summary и Draft PR. Любое несовпадение должно fail closed
+до Docker. Затем возможна отдельная Portage-side verification на Gentoo машине.
