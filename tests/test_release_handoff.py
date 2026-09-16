@@ -26,17 +26,16 @@ def write_overlay(root: Path, versions: tuple[str, str]) -> None:
             f"# {version}\n", encoding="utf-8"
         )
     (package_directory / "Manifest").write_text("DIST example 1 BLAKE2B deadbeef\n", encoding="utf-8")
-    (root / "README.md").write_text(
-        "\n".join(
-            (
-                "<!-- noctalia-versions:start -->",
-                f"| `gui-apps/noctalia-{current}` | Current |",
-                f"| `gui-apps/noctalia-{fallback}` | Fallback |",
-                "<!-- noctalia-versions:end -->",
-            )
-        ),
-        encoding="utf-8",
+    readme = "\n".join(
+        (
+            "<!-- noctalia-versions:start -->",
+            f"| `gui-apps/noctalia-{current}` | Current |",
+            f"| `gui-apps/noctalia-{fallback}` | Fallback |",
+            "<!-- noctalia-versions:end -->",
+        )
     )
+    for readme_name in ("README.md", "README.en.md"):
+        (root / readme_name).write_text(readme, encoding="utf-8")
 
 
 def write_watcher_result(path: Path) -> None:
@@ -120,6 +119,10 @@ class ReleaseHandoffTests(unittest.TestCase):
         )
         self.assertFalse(
             (self.fresh_checkout / "gui-apps" / "noctalia" / "noctalia-5.0.1.ebuild").exists()
+        )
+        self.assertIn(
+            "noctalia-5.2.0",
+            (self.fresh_checkout / "README.en.md").read_text(encoding="utf-8"),
         )
         self.assertEqual(handoff.provenance.target_commit_sha, "c" * 40)
 

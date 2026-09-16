@@ -81,7 +81,8 @@ def prepare_release(
         f"noctalia-{version_text(rotation.removed)}.ebuild"
     ).unlink()
     state = overlay_state(repository_root)
-    update_readme_versions(repository_root / "README.md", state)
+    for readme_name in ("README.md", "README.en.md"):
+        update_readme_versions(repository_root / readme_name, state)
     validate_overlay(repository_root)
     return PrepareResult("prepared", rotation)
 

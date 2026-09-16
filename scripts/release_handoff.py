@@ -85,6 +85,7 @@ def handoff_file_paths(candidate: Version) -> frozenset[str]:
         {
             "release.json",
             "README.md",
+            "README.en.md",
             MANIFEST_PATH,
             version_path(candidate),
         }
@@ -502,6 +503,7 @@ def create_handoff(
     )
     source_files = {
         "README.md": source_root / "README.md",
+        "README.en.md": source_root / "README.en.md",
         "gui-apps/noctalia/Manifest": source_root / "gui-apps" / "noctalia" / "Manifest",
         version_path(candidate): source_root / version_path(candidate),
     }
@@ -562,16 +564,19 @@ def apply_handoff(
     package_directory = repository_root / "gui-apps" / "noctalia"
     _require_directory(package_directory, "Fresh checkout package directory")
     readme_path = repository_root / "README.md"
+    english_readme_path = repository_root / "README.en.md"
     manifest_path = package_directory / "Manifest"
     removed_path = package_directory / f"noctalia-{version_text(handoff.removed)}.ebuild"
     candidate_path = package_directory / f"noctalia-{version_text(handoff.candidate)}.ebuild"
     _require_destination_regular_file(readme_path, "Fresh checkout README.md")
+    _require_destination_regular_file(english_readme_path, "Fresh checkout README.en.md")
     _require_destination_regular_file(manifest_path, "Fresh checkout Manifest")
     _require_destination_regular_file(removed_path, "Fresh checkout removed ebuild")
     if candidate_path.exists() or candidate_path.is_symlink():
         raise HandoffError("Candidate ebuild already exists in the fresh checkout.")
 
     shutil.copy2(handoff_root / "README.md", readme_path)
+    shutil.copy2(handoff_root / "README.en.md", english_readme_path)
     shutil.copy2(handoff_root / "gui-apps" / "noctalia" / "Manifest", manifest_path)
     shutil.copy2(handoff_root / version_path(handoff.candidate), candidate_path)
     removed_path.unlink()
