@@ -1,2 +1,15 @@
 # Backups created by manual editing tools
 *.orig
+
+.env
+.env.*
+!.env.example
+
+*.pem
+*.key
+*.p12
+*.pfx
+
+__pycache__/
+*.py[cod]
+.history
