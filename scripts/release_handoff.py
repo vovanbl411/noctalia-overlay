@@ -12,6 +12,7 @@ import shutil
 import stat
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -36,10 +37,25 @@ PACKAGING_CHANGE_KEYS = frozenset(
     {"packaging_md", "meson_build", "meson_options"}
 )
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+VERIFIED_AT_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+)
 
 
 class HandoffError(OverlayPolicyError):
     """Raised when a release handoff violates its trust boundary."""
+
+
+@dataclass(frozen=True)
+class UpstreamProvenance:
+    """Minimal GitHub-verified annotated-tag metadata carried to publish."""
+
+    tag: str
+    tag_object_sha: str
+    target_commit_sha: str
+    signature_verified: bool
+    verification_reason: str
+    verified_at: str | None
 
 
 @dataclass(frozen=True)
@@ -54,6 +70,7 @@ class ReleaseHandoff:
     branch: str
     pull_request_title: str
     release_url: str
+    provenance: UpstreamProvenance
     packaging_changes: dict[str, str]
 
 
@@ -172,6 +189,47 @@ def _parse_commit(value: object, field: str) -> str:
     return value
 
 
+def _parse_verified_at(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or VERIFIED_AT_PATTERN.fullmatch(value) is None:
+        raise HandoffError("Handoff provenance verified_at is invalid.")
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise HandoffError("Handoff provenance verified_at is invalid.") from error
+    return value
+
+
+def _parse_provenance(value: object, release_tag: str) -> UpstreamProvenance:
+    expected_fields = {
+        "tag",
+        "tag_object_sha",
+        "target_commit_sha",
+        "signature_verified",
+        "verification_reason",
+        "verified_at",
+    }
+    if not isinstance(value, dict) or set(value) != expected_fields:
+        raise HandoffError("Handoff provenance has unexpected fields.")
+    if value["tag"] != release_tag:
+        raise HandoffError("Handoff provenance tag does not match the release tag.")
+    if value["signature_verified"] is not True:
+        raise HandoffError("Handoff provenance signature is not verified.")
+    if value["verification_reason"] != "valid":
+        raise HandoffError("Handoff provenance verification reason is invalid.")
+    return UpstreamProvenance(
+        tag=release_tag,
+        tag_object_sha=_parse_commit(value["tag_object_sha"], "tag_object_sha"),
+        target_commit_sha=_parse_commit(
+            value["target_commit_sha"], "target_commit_sha"
+        ),
+        signature_verified=True,
+        verification_reason="valid",
+        verified_at=_parse_verified_at(value["verified_at"]),
+    )
+
+
 def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
     value: dict[str, object] = {}
     for key, item in pairs:
@@ -202,6 +260,7 @@ def _parse_handoff_payload(value: object) -> ReleaseHandoff:
         "branch",
         "pull_request_title",
         "release_url",
+        "provenance",
         "packaging_changes",
     }
     if not isinstance(value, dict) or set(value) != expected_fields:
@@ -227,6 +286,7 @@ def _parse_handoff_payload(value: object) -> ReleaseHandoff:
         raise HandoffError("Handoff branch is not deterministic for the release tag.")
     if title != f"[release-bump] Noctalia {release_tag}":
         raise HandoffError("Handoff pull request title is not deterministic.")
+    provenance = _parse_provenance(value["provenance"], release_tag)
     return ReleaseHandoff(
         release_tag=release_tag,
         base_commit=_parse_commit(value["base_commit"], "base_commit"),
@@ -236,6 +296,7 @@ def _parse_handoff_payload(value: object) -> ReleaseHandoff:
         branch=branch,
         pull_request_title=title,
         release_url=_parse_release_url(value["release_url"], release_tag),
+        provenance=provenance,
         packaging_changes=_parse_packaging_changes(value["packaging_changes"]),
     )
 
@@ -378,7 +439,9 @@ def verify_workspace_integrity(workspace: Path, baseline_path: Path) -> None:
             raise HandoffError(f"Container changed unexpected workspace entry {path}.")
 
 
-def _watch_result_details(path: Path, release_tag: str) -> tuple[str, dict[str, str]]:
+def _watch_result_details(
+    path: Path, release_tag: str
+) -> tuple[str, UpstreamProvenance, dict[str, str]]:
     _require_regular_file(path, "Watcher result")
     payload = _load_json(path, "watcher result")
     if not isinstance(payload, dict):
@@ -388,6 +451,7 @@ def _watch_result_details(path: Path, release_tag: str) -> tuple[str, dict[str, 
         raise HandoffError("Watcher result does not match the release tag.")
     return (
         _parse_release_url(release.get("url"), release_tag),
+        _parse_provenance(payload.get("provenance"), release_tag),
         _parse_packaging_changes(payload.get("packaging_changes")),
     )
 
@@ -411,7 +475,9 @@ def create_handoff(
         raise HandoffError("Prepared overlay does not match the intended rotation.")
     if not removed < fallback < candidate or release_tag != f"v{version_text(candidate)}":
         raise HandoffError("Release rotation metadata is invalid.")
-    release_url, packaging_changes = _watch_result_details(watch_result, release_tag)
+    release_url, provenance, packaging_changes = _watch_result_details(
+        watch_result, release_tag
+    )
     handoff = ReleaseHandoff(
         release_tag=release_tag,
         base_commit=_parse_commit(base_commit, "base_commit"),
@@ -421,6 +487,7 @@ def create_handoff(
         branch=f"automation/noctalia-{release_tag}",
         pull_request_title=f"[release-bump] Noctalia {release_tag}",
         release_url=release_url,
+        provenance=provenance,
         packaging_changes=packaging_changes,
     )
     source_files = {
@@ -443,6 +510,14 @@ def create_handoff(
         "branch": handoff.branch,
         "pull_request_title": handoff.pull_request_title,
         "release_url": handoff.release_url,
+        "provenance": {
+            "tag": handoff.provenance.tag,
+            "tag_object_sha": handoff.provenance.tag_object_sha,
+            "target_commit_sha": handoff.provenance.target_commit_sha,
+            "signature_verified": handoff.provenance.signature_verified,
+            "verification_reason": handoff.provenance.verification_reason,
+            "verified_at": handoff.provenance.verified_at,
+        },
         "packaging_changes": handoff.packaging_changes,
     }
     (destination / "release.json").write_text(
@@ -518,7 +593,17 @@ def draft_pull_request_body(handoff: ReleaseHandoff) -> str:
             "- Manifest generated",
             "- Exactly two stable ebuilds",
             "- Python unit tests",
+            "- OpenPGP tag signature verified by GitHub",
             "- `pkgcheck scan`",
+            "",
+            "## Upstream provenance",
+            "",
+            "- Annotated Git tag: verified",
+            "- OpenPGP signature: verified by GitHub",
+            f"- Tag object: `{handoff.provenance.tag_object_sha}`",
+            f"- Target commit: `{handoff.provenance.target_commit_sha}`",
+            f"- Verification reason: `{handoff.provenance.verification_reason}`",
+            f"- Verified at: `{handoff.provenance.verified_at or 'not reported'}`",
             "",
             "## Upstream packaging changes",
             "",
@@ -529,7 +614,7 @@ def draft_pull_request_body(handoff: ReleaseHandoff) -> str:
             "## Manual verification",
             "",
             "- [ ] Review upstream release notes.",
-            "- [ ] Verify the upstream tag and signature where applicable.",
+            "- [ ] Review upstream provenance/signing identity if anything looks unusual.",
             "- [ ] Review `PACKAGING.md` changes and dependency changes.",
             "- [ ] Run `emerge -pv gui-apps/noctalia`.",
             "- [ ] Install the candidate Noctalia version.",

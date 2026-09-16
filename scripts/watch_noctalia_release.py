@@ -9,6 +9,7 @@ import os
 import re
 import sys
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -37,6 +38,10 @@ PULLS_API_URL = "https://api.github.com/repos/{repository}/pulls"
 CONTENTS_API_URL = "https://api.github.com/repos/{repository}/contents/{path}"
 TAG_PATTERN = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+GIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+VERIFIED_AT_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+)
 PACKAGING_FILES = ("PACKAGING.md", "meson.build", "meson_options.txt")
 
 
@@ -59,10 +64,23 @@ class PackagingChanges:
 
 
 @dataclass(frozen=True)
+class TagProvenance:
+    """Minimal GitHub-verified provenance for one annotated upstream tag."""
+
+    tag: str
+    tag_object_sha: str
+    target_commit_sha: str
+    signature_verified: bool
+    verification_reason: str
+    verified_at: str | None
+
+
+@dataclass(frozen=True)
 class WatchResult:
     outcome: str
     packaged_version: Version
     release: Release
+    provenance: TagProvenance
     packaging_changes: PackagingChanges | None = None
 
 
@@ -71,7 +89,11 @@ class ReleaseClient(Protocol):
 
     def pull_request_exists(self, title: str, branch: str) -> bool: ...
 
-    def upstream_file_sha(self, path: str, tag: str) -> str | None: ...
+    def tag_ref(self, tag: str) -> dict[str, Any]: ...
+
+    def annotated_tag(self, tag_object_sha: str) -> dict[str, Any]: ...
+
+    def upstream_file_sha(self, path: str, ref: str) -> str | None: ...
 
 
 class GitHubClient:
@@ -103,10 +125,20 @@ class GitHubClient:
         )
         return bool(pull_requests)
 
-    def upstream_file_sha(self, path: str, tag: str) -> str | None:
+    def tag_ref(self, tag: str) -> dict[str, Any]:
+        return self._request_json(
+            f"https://api.github.com/repos/{UPSTREAM_REPOSITORY}/git/ref/tags/{quote(tag)}"
+        )
+
+    def annotated_tag(self, tag_object_sha: str) -> dict[str, Any]:
+        return self._request_json(
+            f"https://api.github.com/repos/{UPSTREAM_REPOSITORY}/git/tags/{tag_object_sha}"
+        )
+
+    def upstream_file_sha(self, path: str, ref: str) -> str | None:
         payload = self._request_json(
             CONTENTS_API_URL.format(repository=UPSTREAM_REPOSITORY, path=quote(path)),
-            query={"ref": tag},
+            query={"ref": ref},
             allow_not_found=True,
         )
         if payload is None:
@@ -191,6 +223,89 @@ def parse_stable_release(payload: dict[str, Any]) -> Release:
     return Release(tag=tag, version=tuple(map(int, match.groups())), url=release_url)
 
 
+def _full_git_sha(value: object, description: str) -> str:
+    if not isinstance(value, str) or GIT_SHA_PATTERN.fullmatch(value) is None:
+        raise WatcherError(f"GitHub API returned an invalid {description} SHA.")
+    return value
+
+
+def _verified_at(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or VERIFIED_AT_PATTERN.fullmatch(value) is None:
+        raise WatcherError("GitHub API returned an invalid verification timestamp.")
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise WatcherError("GitHub API returned an invalid verification timestamp.") from error
+    return value
+
+
+def _verified_signature(value: object) -> None:
+    if not isinstance(value, str):
+        raise WatcherError("GitHub API returned a missing tag signature.")
+    signature = value.strip()
+    if not (
+        signature.startswith("-----BEGIN PGP SIGNATURE-----")
+        and signature.endswith("-----END PGP SIGNATURE-----")
+    ):
+        raise WatcherError("GitHub API returned a non-OpenPGP tag signature.")
+
+
+def _validate_signed_payload(payload: object, tag: str, target_commit_sha: str) -> None:
+    if not isinstance(payload, str):
+        raise WatcherError("GitHub API returned a missing signed tag payload.")
+    header_block = payload.split("\n\n", maxsplit=1)[0]
+    header_lines = header_block.splitlines()
+    expected = (
+        f"object {target_commit_sha}",
+        "type commit",
+        f"tag {tag}",
+    )
+    if tuple(header_lines[:3]) != expected:
+        raise WatcherError("GitHub API signed tag payload does not match the tag object.")
+
+
+def tag_provenance(client: ReleaseClient, tag: str) -> TagProvenance:
+    """Verify a stable release's signed annotated tag through GitHub's Git API."""
+    ref_payload = client.tag_ref(tag)
+    ref = ref_payload.get("ref")
+    ref_object = ref_payload.get("object")
+    if ref != f"refs/tags/{tag}" or not isinstance(ref_object, dict):
+        raise WatcherError("GitHub API returned an invalid tag ref response.")
+    if ref_object.get("type") != "tag":
+        raise WatcherError("Upstream release tag must be an annotated Git tag.")
+    tag_object_sha = _full_git_sha(ref_object.get("sha"), "tag ref object")
+
+    tag_payload = client.annotated_tag(tag_object_sha)
+    if _full_git_sha(tag_payload.get("sha"), "annotated tag object") != tag_object_sha:
+        raise WatcherError("GitHub API annotated tag object SHA does not match its ref.")
+    if tag_payload.get("tag") != tag:
+        raise WatcherError("GitHub API annotated tag object name does not match the release.")
+    target = tag_payload.get("object")
+    if not isinstance(target, dict) or target.get("type") != "commit":
+        raise WatcherError("Upstream annotated tag must point to a commit.")
+    target_commit_sha = _full_git_sha(target.get("sha"), "target commit")
+
+    verification = tag_payload.get("verification")
+    if not isinstance(verification, dict):
+        raise WatcherError("GitHub API returned missing tag verification metadata.")
+    if verification.get("verified") is not True:
+        raise WatcherError("GitHub did not verify the upstream tag signature.")
+    if verification.get("reason") != "valid":
+        raise WatcherError("GitHub reported an invalid upstream tag signature.")
+    _verified_signature(verification.get("signature"))
+    _validate_signed_payload(verification.get("payload"), tag, target_commit_sha)
+    return TagProvenance(
+        tag=tag,
+        tag_object_sha=tag_object_sha,
+        target_commit_sha=target_commit_sha,
+        signature_verified=True,
+        verification_reason="valid",
+        verified_at=_verified_at(verification.get("verified_at")),
+    )
+
+
 def draft_pull_request_title(release: Release) -> str:
     """Return the deterministic title used for idempotent PR lookup."""
     return f"[release-bump] Noctalia {release.tag}"
@@ -202,13 +317,13 @@ def draft_pull_request_branch(release: Release) -> str:
 
 
 def packaging_changes(
-    client: ReleaseClient, previous_tag: str, release_tag: str
+    client: ReleaseClient, previous_commit_sha: str, release_commit_sha: str
 ) -> PackagingChanges:
     """Compare exact upstream packaging files by immutable Git blob SHA."""
     states = {}
     for path in PACKAGING_FILES:
-        before = client.upstream_file_sha(path, previous_tag)
-        after = client.upstream_file_sha(path, release_tag)
+        before = client.upstream_file_sha(path, previous_commit_sha)
+        after = client.upstream_file_sha(path, release_commit_sha)
         if after is None:
             states[path] = "not present"
         elif before != after:
@@ -226,22 +341,26 @@ def watch(
     client: ReleaseClient, repository_root: Path, *, dry_run: bool
 ) -> WatchResult:
     """Discover one unreported release without making any repository changes."""
-    state = validate_overlay(repository_root)
     release = client.latest_release()
+    provenance = tag_provenance(client, release.tag)
+    state = validate_overlay(repository_root)
     if state.current.version >= release.version:
-        return WatchResult("up-to-date", state.current.version, release)
+        return WatchResult("up-to-date", state.current.version, release, provenance)
     if client.pull_request_exists(
         draft_pull_request_title(release), draft_pull_request_branch(release)
     ):
-        return WatchResult("already-reported", state.current.version, release)
+        return WatchResult("already-reported", state.current.version, release, provenance)
 
+    previous_provenance = tag_provenance(
+        client, f"v{version_text(state.current.version)}"
+    )
     changes = packaging_changes(
         client,
-        f"v{version_text(state.current.version)}",
-        release.tag,
+        previous_provenance.target_commit_sha,
+        provenance.target_commit_sha,
     )
     outcome = "dry-run" if dry_run else "release-available"
-    return WatchResult(outcome, state.current.version, release, changes)
+    return WatchResult(outcome, state.current.version, release, provenance, changes)
 
 
 def result_payload(result: WatchResult) -> dict[str, Any]:
@@ -250,6 +369,7 @@ def result_payload(result: WatchResult) -> dict[str, Any]:
         "outcome": result.outcome,
         "packaged_version": version_text(result.packaged_version),
         "release": asdict(result.release),
+        "provenance": asdict(result.provenance),
     }
     if result.packaging_changes is not None:
         payload["packaging_changes"] = asdict(result.packaging_changes)
@@ -265,6 +385,15 @@ def write_summary(result: WatchResult, summary_path: Path | None) -> None:
         "",
         f"- Packaged stable version: `{version_text(result.packaged_version)}`",
         f"- Latest upstream release: [`{result.release.tag}`]({result.release.url})",
+        "",
+        "Upstream provenance:",
+        "",
+        "- Tag type: annotated",
+        "- OpenPGP signature: verified by GitHub",
+        f"- Verification reason: `{result.provenance.verification_reason}`",
+        f"- Tag object: `{result.provenance.tag_object_sha}`",
+        f"- Target commit: `{result.provenance.target_commit_sha}`",
+        f"- Verified at: `{result.provenance.verified_at or 'not reported'}`",
         f"- Result: `{result.outcome}`",
     ]
     if result.packaging_changes is not None:
