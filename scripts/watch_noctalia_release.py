@@ -255,6 +255,8 @@ def _verified_signature(value: object) -> None:
 def _validate_signed_payload(payload: object, tag: str, target_commit_sha: str) -> None:
     if not isinstance(payload, str):
         raise WatcherError("GitHub API returned a missing signed tag payload.")
+    # Git tag headers идут до первой пустой строки. Проверка только этого блока
+    # не позволяет тексту в tag message случайно удовлетворить условие.
     header_block = payload.split("\n\n", maxsplit=1)[0]
     header_lines = header_block.splitlines()
     expected = (
@@ -268,6 +270,8 @@ def _validate_signed_payload(payload: object, tag: str, target_commit_sha: str) 
 
 def tag_provenance(client: ReleaseClient, tag: str) -> TagProvenance:
     """Verify a stable release's signed annotated tag through GitHub's Git API."""
+    # Сначала разрешаем ref: ref прямо на commit — это lightweight tag без
+    # signed annotated-tag object, который можно было бы проверить.
     ref_payload = client.tag_ref(tag)
     ref = ref_payload.get("ref")
     ref_object = ref_payload.get("object")
@@ -277,6 +281,8 @@ def tag_provenance(client: ReleaseClient, tag: str) -> TagProvenance:
         raise WatcherError("Upstream release tag must be an annotated Git tag.")
     tag_object_sha = _full_git_sha(ref_object.get("sha"), "tag ref object")
 
+    # Второй response сверяется с SHA из ref, чтобы GitHub responses от двух
+    # разных tags нельзя было смешать.
     tag_payload = client.annotated_tag(tag_object_sha)
     if _full_git_sha(tag_payload.get("sha"), "annotated tag object") != tag_object_sha:
         raise WatcherError("GitHub API annotated tag object SHA does not match its ref.")
@@ -287,6 +293,8 @@ def tag_provenance(client: ReleaseClient, tag: str) -> TagProvenance:
         raise WatcherError("Upstream annotated tag must point to a commit.")
     target_commit_sha = _full_git_sha(target.get("sha"), "target commit")
 
+    # На этом этапе GitHub — verification authority. Truthy value или reason
+    # не равный "valid" намеренно недостаточны для продолжения.
     verification = tag_payload.get("verification")
     if not isinstance(verification, dict):
         raise WatcherError("GitHub API returned missing tag verification metadata.")
@@ -342,6 +350,8 @@ def watch(
 ) -> WatchResult:
     """Discover one unreported release without making any repository changes."""
     release = client.latest_release()
+    # Проверяем даже уже packaged latest release: изменённый или invalid tag
+    # должен завершить scheduled run ошибкой, а не тихим up-to-date.
     provenance = tag_provenance(client, release.tag)
     state = validate_overlay(repository_root)
     if state.current.version >= release.version:
@@ -351,6 +361,8 @@ def watch(
     ):
         return WatchResult("already-reported", state.current.version, release, provenance)
 
+    # Разрешаем также уже packaged tag и сравниваем files по immutable commit
+    # IDs, а не по tag names, которые upstream может позднее переместить.
     previous_provenance = tag_provenance(
         client, f"v{version_text(state.current.version)}"
     )

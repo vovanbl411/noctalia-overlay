@@ -74,6 +74,8 @@ def prepare_release(
     if dry_run:
         return PrepareResult("dry-run", rotation)
 
+    # Сначала копируем ebuild: при ошибке подготовки overlay не останется с
+    # единственным stable ebuild до удаления старого fallback.
     shutil.copy2(rotation.source_ebuild, rotation.target_ebuild)
     rotation.source_ebuild.with_name(
         f"noctalia-{version_text(rotation.removed)}.ebuild"
