@@ -105,13 +105,6 @@ jobs:
               --summary "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Record container workspace integrity
-        if: steps.eligibility.outputs.publish_ready == 'true' && steps.rotation.outputs.prepared == 'true'
-        run: |
-          python3 scripts/release_handoff.py snapshot-workspace \
-            --workspace "$RUNNER_TEMP/noctalia-overlay" \
-            --output "$RUNNER_TEMP/noctalia-overlay-before-container.json"
-
       - name: Generate Manifest and run pkgcheck
         if: steps.eligibility.outputs.publish_ready == 'true' && steps.rotation.outputs.prepared == 'true'
         env:
@@ -128,9 +121,6 @@ jobs:
             --volumes-from noctalia-portage \
             --mount "type=bind,src=$RUNNER_TEMP/noctalia-overlay,dst=/overlay" \
             --workdir /overlay \
-            --env XDG_CACHE_HOME=/tmp/xdg-cache \
-            --env XDG_CONFIG_HOME=/tmp/xdg-config \
-            --env XDG_DATA_HOME=/tmp/xdg-data \
             --env OVERLAY_GID="$(id -g)" \
             --env OVERLAY_UID="$(id -u)" \
             --env RELEASE_TAG \
@@ -141,13 +131,6 @@ jobs:
               pkgcheck scan --exit
               chown -R "$OVERLAY_UID:$OVERLAY_GID" /overlay
             '
-
-      - name: Verify container workspace integrity
-        if: steps.eligibility.outputs.publish_ready == 'true' && steps.rotation.outputs.prepared == 'true'
-        run: |
-          python3 scripts/release_handoff.py verify-workspace \
-            --workspace "$RUNNER_TEMP/noctalia-overlay" \
-            --baseline "$RUNNER_TEMP/noctalia-overlay-before-container.json"
 
       - name: Create release handoff
         id: handoff

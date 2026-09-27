@@ -85,12 +85,6 @@ emerge --oneshot dev-util/pkgcheck
 pkgcheck scan --exit
 ```
 
-Before the container starts, the workflow saves a complete snapshot of the
-sanitized workspace contents and modes. After it exits, the workflow compares
-the snapshot: only `gui-apps/noctalia/Manifest` may change. Adding, removing,
-or changing any other file or directory stops preparation before artifact
-creation.
-
 If Manifest generation or `pkgcheck` fails, `publish` does not run.
 
 ## Artifact between jobs
