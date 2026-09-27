@@ -128,6 +128,9 @@ jobs:
             --volumes-from noctalia-portage \
             --mount "type=bind,src=$RUNNER_TEMP/noctalia-overlay,dst=/overlay" \
             --workdir /overlay \
+            --env XDG_CACHE_HOME=/tmp/xdg-cache \
+            --env XDG_CONFIG_HOME=/tmp/xdg-config \
+            --env XDG_DATA_HOME=/tmp/xdg-data \
             --env OVERLAY_GID="$(id -g)" \
             --env OVERLAY_UID="$(id -u)" \
             --env RELEASE_TAG \
