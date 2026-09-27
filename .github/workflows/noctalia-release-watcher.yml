@@ -211,7 +211,12 @@ jobs:
             gui-apps/noctalia/Manifest \
             "gui-apps/noctalia/noctalia-${CANDIDATE_VERSION}.ebuild" \
             "gui-apps/noctalia/noctalia-${REMOVED_VERSION}.ebuild" | LC_ALL=C sort)"
-          actual_changes="$(git diff --name-only | LC_ALL=C sort)"
+          actual_changes="$(
+            {
+              git diff --name-only
+              git ls-files --others --exclude-standard
+            } | LC_ALL=C sort -u
+          )"
           test "$actual_changes" = "$expected_changes"
 
       - name: Create release branch and commit
