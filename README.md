@@ -16,8 +16,8 @@ fallback удаляется. До merge `main` не меняется.
 <!-- noctalia-versions:start -->
 | Пакет | Назначение |
 | --- | --- |
-| `gui-apps/noctalia-5.1.0` | Текущий стабильный релиз |
-| `gui-apps/noctalia-5.0.1` | Предыдущая версия для отката |
+| `gui-apps/noctalia-5.2.0` | Текущий стабильный релиз |
+| `gui-apps/noctalia-5.1.0` | Предыдущая версия для отката |
 <!-- noctalia-versions:end -->
 
 Оверлей наследует eclass'ы из основного репозитория Gentoo. Для Noctalia
