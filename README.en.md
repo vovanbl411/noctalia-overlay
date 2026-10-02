@@ -15,8 +15,8 @@ and the old fallback is removed. `main` remains unchanged until the PR is merged
 <!-- noctalia-versions:start -->
 | Package | Purpose |
 | --- | --- |
-| `gui-apps/noctalia-5.2.0` | Current stable release |
-| `gui-apps/noctalia-5.1.0` | Previous release for rollback |
+| `gui-apps/noctalia-5.2.1` | Current stable release |
+| `gui-apps/noctalia-5.2.0` | Previous release for rollback |
 <!-- noctalia-versions:end -->
 
 The overlay inherits eclasses from the main Gentoo repository. Noctalia keeps
