@@ -106,10 +106,10 @@ release-handoff/
 
 `release.json` contains the schema version, base commit, stable release tag,
 candidate/fallback/removed versions, deterministic branch and PR title, release
-URL, metadata for packaging-file changes, and minimal provenance metadata: tag
-object SHA, target commit SHA, verification status and reason, and `verified_at`
-when GitHub provides it. Paths are not passed as data; they are constructed from
-validated versions.
+URL, metadata for packaging-file changes, and provenance metadata: tag type,
+optional tag object SHA, target commit SHA, verification status and reason, and
+`verified_at` when GitHub provides it. Paths are not passed as data; they are
+constructed from validated versions.
 
 `publish` treats the artifact as untrusted input. Before applying it, it checks
 the exact file and directory list, regular-file type, absence of symlinks and
@@ -203,37 +203,29 @@ actual state cannot be determined from the Git repository contents.
 
 ## Trust in upstream Noctalia
 
-The automation accepts only stable `vX.Y.Z` tags, rejects prereleases, and
-queries the GitHub Git Database API before rotation. A candidate requires an
-annotated tag: the ref must point to a tag object, the tag object must point to
-a commit, and all Git object SHAs must be complete 40-character lowercase SHAs.
+The GitHub Release is the primary signal that a stable release was published.
+The automation accepts only a public, non-prerelease release with a `vX.Y.Z` tag
+and the expected `noctalia-dev/noctalia` URL. The tag must resolve to a full
+40-character lowercase commit SHA: a lightweight tag may point directly to a
+commit, while an annotated tag must point to a commit through its tag object.
 
-GitHub must report `verification.verified: true` and
-`verification.reason: valid`. The automation also checks the armored OpenPGP
-signature and canonical header lines in the signed payload: `object <commit>`,
-`type commit`, and `tag <release-tag>`. Lightweight tags, unsigned tags,
-contradictory payloads, and malformed responses are rejected before the
-container, artifact, branch, or Draft PR.
+Before checking overlay policy, the automation reads `VERSION` through the
+GitHub Contents API with `ref` set to the exact target commit SHA. The file must
+be UTF-8 and contain exactly the release version. A missing, malformed, or
+mismatching `VERSION` fails the run. Before the packaging diff, the same check
+runs for the exact commit resolved from the currently packaged tag.
+`PACKAGING.md`, `meson.build`, and `meson_options.txt` are compared by these
+commit SHAs rather than mutable tag names.
 
-For the packaging diff, both the candidate tag and the tag of the current
-packaged version are checked. `PACKAGING.md`, `meson.build`, and
-`meson_options.txt` are compared by verified immutable commit SHA rather than a
-mutable tag name. Provenance appears in the workflow summary and Draft PR
-without the signature block or tag message.
+Tag signatures are additional provenance metadata, not an acceptance gate. For
+annotated tags, the automation records GitHub's response. If GitHub reports
+`verified: true`, `reason: valid`, a correctly formed armored OpenPGP signature,
+and a signed payload with matching `object`, `type commit`, and `tag` headers
+are required. Contradictory verified responses fail. A `verified: false`
+response does not by itself block a stable release; its reason is preserved
+and the signature is not presented as verified. Lightweight tags report
+signature verification as `not applicable`. The summary and Draft PR show the
+actual provenance.
 
-This trust model relies on GitHub's verification result. The overlay does not
-yet perform independent OpenPGP verification or pin the maintainer's key
-fingerprint. Manual review of release notes and signing identity remains
-required when provenance looks unusual.
-
-The next separate hardening step is independent local OpenPGP verification. It
-will add the trusted upstream public key to the repository and pin its full
-fingerprint. A local GPG helper will verify the imported key fingerprint, exact
-signature, and signed payload of the already obtained tag without allowing
-network key retrieval. GitHub verification will remain a second required check.
-
-After successful local verification, the handoff will contain
-`local_signature_verified: true` and the complete `signer_fingerprint`; both
-fields will appear in the workflow summary and Draft PR. Any mismatch must fail
-closed before Docker. A separate Portage-side verification on the Gentoo machine
-can follow.
+Manual review of release notes and upstream provenance/signing identity remains
+part of Draft PR review where applicable.

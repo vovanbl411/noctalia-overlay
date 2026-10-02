@@ -105,9 +105,9 @@ release-handoff/
 
 `release.json` содержит schema version, base commit, stable release tag,
 candidate/fallback/removed versions, deterministic branch и PR title, URL
-релиза, metadata изменений packaging files и минимальную provenance metadata:
-tag object SHA, target commit SHA, статус и причину verification, а также
-`verified_at`, если GitHub его сообщил. Пути не передаются как данные: они
+релиза, metadata изменений packaging files и provenance metadata: тип tag,
+optional tag object SHA, target commit SHA, статус и причину verification, а
+также `verified_at`, если GitHub его сообщил. Пути не передаются как данные: они
 строятся из уже проверенных версий.
 
 `publish` считает artifact недоверенным input. Перед применением он проверяет
@@ -202,35 +202,27 @@ GitHub Secret Scanning и Push Protection рекомендуется включ�
 
 ## Доверие к upstream Noctalia
 
-Automation принимает только stable tags `vX.Y.Z`, отвергает prerelease и до
-rotation запрашивает GitHub Git Database API. Для candidate требуется
-annotated tag: ref должен указывать на tag object, tag object — на commit, а
-все Git object SHA должны быть полными 40-символьными lowercase SHA.
+GitHub Release — первичный сигнал публикации stable-релиза. Automation
+принимает только public, non-prerelease release с тегом `vX.Y.Z` и ожидаемым
+URL `noctalia-dev/noctalia`. Tag должен разрешаться в full 40-character
+lowercase commit SHA: lightweight tag может указывать прямо на commit,
+annotated tag должен указывать на commit через tag object.
 
-GitHub должен сообщить `verification.verified: true` и
-`verification.reason: valid`. Automation также проверяет OpenPGP armored
-signature и canonical header lines signed payload: `object <commit>`, `type
-commit`, `tag <release-tag>`. Lightweight tags, unsigned tags, противоречивые
-payload и любой malformed response отклоняются до container, artifact, branch
-и Draft PR.
+До проверки overlay policy automation читает `VERSION` через GitHub Contents
+API с `ref`, равным exact target commit SHA. Файл должен быть UTF-8 и содержать
+ровно версию release. Отсутствующий, некорректный или несовпадающий `VERSION`
+завершает run ошибкой. Перед packaging diff та же проверка выполняется для
+точного commit текущего packaged tag. Файлы `PACKAGING.md`, `meson.build` и
+`meson_options.txt` сравниваются по этим commit SHA, а не по mutable tag names.
 
-Для packaging diff проверяются как candidate tag, так и tag текущей packaged
-версии. Файлы `PACKAGING.md`, `meson.build` и `meson_options.txt` сравниваются
-по verified immutable commit SHA, а не по mutable tag name. Provenance видна в
-workflow summary и Draft PR без signature block или tag message.
+Подпись tag — дополнительная provenance metadata, а не acceptance gate. Для
+annotated tag automation сохраняет ответ GitHub. Если GitHub сообщает
+`verified: true`, обязательны `reason: valid`, корректная OpenPGP armored
+signature и signed payload с соответствующими `object`, `type commit` и `tag`
+headers. Противоречивые verified responses отклоняются. Ответ `verified: false`
+сам по себе не блокирует stable release; его reason сохраняется, и подпись не
+представляется проверенной. Для lightweight tag signature verification имеет
+значение `not applicable`. Summary и Draft PR показывают фактическую provenance.
 
-Эта модель доверяет результату проверки GitHub. Оверлей пока не выполняет
-независимую OpenPGP verification и не закрепляет fingerprint ключа maintainer.
-Manual review release notes и signing identity остаётся обязательной, если
-provenance выглядит необычно.
-
-Следующий отдельный этап hardening — независимая локальная OpenPGP verification.
-Для него в repository добавят trusted upstream public key и закрепят его полный
-fingerprint. Local GPG helper будет проверять fingerprint импортированного key,
-exact signature и signed payload уже полученного tag, не разрешая network key
-retrieval. GitHub verification сохранится второй обязательной проверкой.
-
-После успешной локальной проверки handoff будет содержать
-`local_signature_verified: true` и полный `signer_fingerprint`; оба поля будут
-показаны в workflow summary и Draft PR. Любое несовпадение должно fail closed
-до Docker. Затем возможна отдельная Portage-side verification на Gentoo машине.
+Manual review release notes и upstream provenance/signing identity остаётся
+частью проверки Draft PR, когда это применимо.

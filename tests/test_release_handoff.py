@@ -48,6 +48,7 @@ def write_watcher_result(path: Path) -> None:
                 },
                 "provenance": {
                     "tag": "v5.2.0",
+                    "tag_type": "annotated",
                     "tag_object_sha": "b" * 40,
                     "target_commit_sha": "c" * 40,
                     "signature_verified": True,
@@ -110,6 +111,10 @@ class ReleaseHandoffTests(unittest.TestCase):
 
     def test_real_release_creates_and_applies_valid_handoff(self) -> None:
         handoff_root = self.create_handoff()
+        self.assertEqual(
+            self.load_metadata(handoff_root)["schema_version"],
+            HANDOFF.HANDOFF_SCHEMA_VERSION,
+        )
 
         handoff = HANDOFF.apply_handoff(handoff_root, self.fresh_checkout)
 
@@ -126,18 +131,86 @@ class ReleaseHandoffTests(unittest.TestCase):
         )
         self.assertEqual(handoff.provenance.target_commit_sha, "c" * 40)
 
-    def test_draft_pull_request_contains_verified_provenance(self) -> None:
+    def test_draft_pull_request_contains_annotated_signed_provenance(self) -> None:
         handoff_root = self.create_handoff()
         handoff = HANDOFF.validate_handoff(handoff_root)
 
         body = HANDOFF.draft_pull_request_body(handoff)
 
-        self.assertIn("OpenPGP signature: verified by GitHub", body)
+        self.assertIn("GitHub tag signature verification: verified", body)
         self.assertIn(f"Tag object: `{'b' * 40}`", body)
         self.assertIn(
             "Review upstream provenance/signing identity if anything looks unusual.",
             body,
         )
+
+    def test_handoff_accepts_valid_lightweight_provenance(self) -> None:
+        handoff_root = self.create_handoff()
+        metadata = self.load_metadata(handoff_root)
+        provenance = metadata["provenance"]
+        assert isinstance(provenance, dict)
+        provenance.update(
+            tag_type="lightweight",
+            tag_object_sha=None,
+            signature_verified=False,
+            verification_reason="not-applicable",
+            verified_at=None,
+        )
+        self.write_metadata(handoff_root, metadata)
+
+        handoff = HANDOFF.validate_handoff(handoff_root)
+
+        self.assertEqual(handoff.provenance.tag_type, "lightweight")
+        self.assertIsNone(handoff.provenance.tag_object_sha)
+        self.assertFalse(handoff.provenance.signature_verified)
+        body = HANDOFF.draft_pull_request_body(handoff)
+        self.assertIn("Tag type: lightweight", body)
+        self.assertIn("GitHub tag signature verification: not applicable", body)
+        self.assertNotIn("OpenPGP signature: verified by GitHub", body)
+
+    def test_handoff_accepts_annotated_unsigned_provenance(self) -> None:
+        handoff_root = self.create_handoff()
+        metadata = self.load_metadata(handoff_root)
+        provenance = metadata["provenance"]
+        assert isinstance(provenance, dict)
+        provenance.update(signature_verified=False, verification_reason="unsigned")
+        self.write_metadata(handoff_root, metadata)
+
+        handoff = HANDOFF.validate_handoff(handoff_root)
+
+        self.assertFalse(handoff.provenance.signature_verified)
+        self.assertEqual(handoff.provenance.verification_reason, "unsigned")
+
+    def test_handoff_rejects_inconsistent_provenance_combinations(self) -> None:
+        invalid_updates = (
+            {"signature_verified": True, "verification_reason": "unsigned"},
+            {"signature_verified": False, "verification_reason": "valid"},
+            {"signature_verified": False, "verification_reason": "not-applicable"},
+            {"tag_type": "lightweight", "tag_object_sha": "b" * 40},
+            {"tag_type": "lightweight", "signature_verified": True},
+            {"tag_type": "lightweight", "verification_reason": "unsigned"},
+            {"tag_type": "mystery"},
+        )
+        for index, updates in enumerate(invalid_updates):
+            handoff_root = self.create_handoff() if index == 0 else self.root / f"invalid-{index}"
+            if index > 0:
+                HANDOFF.create_handoff(
+                    self.source,
+                    handoff_root,
+                    self.watcher_result,
+                    release_tag="v5.2.0",
+                    base_commit="a" * 40,
+                    removed=(5, 0, 1),
+                    fallback=(5, 1, 0),
+                    candidate=(5, 2, 0),
+                )
+            metadata = self.load_metadata(handoff_root)
+            provenance = metadata["provenance"]
+            assert isinstance(provenance, dict)
+            provenance.update(updates)
+            self.write_metadata(handoff_root, metadata)
+            with self.subTest(updates=updates), self.assertRaises(HANDOFF.HandoffError):
+                HANDOFF.validate_handoff(handoff_root)
 
     def test_rejects_handoff_for_a_different_main_commit(self) -> None:
         handoff_root = self.create_handoff()
@@ -234,7 +307,7 @@ class ReleaseHandoffTests(unittest.TestCase):
     def test_rejects_duplicate_json_fields(self) -> None:
         handoff_root = self.create_handoff()
         (handoff_root / "release.json").write_text(
-            '{"schema_version": 1, "schema_version": 1}\n', encoding="utf-8"
+            '{"schema_version": 2, "schema_version": 2}\n', encoding="utf-8"
         )
 
         with self.assertRaises(HANDOFF.HandoffError):

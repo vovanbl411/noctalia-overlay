@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "watch_noctalia_release.py"
@@ -22,7 +23,7 @@ CURRENT_TAG_OBJECT = "a" * 40
 CANDIDATE_TAG_OBJECT = "b" * 40
 CURRENT_COMMIT = "c" * 40
 CANDIDATE_COMMIT = "d" * 40
-PGP_SIGNATURE = "-----BEGIN PGP SIGNATURE-----\nsynthetic\n-----END PGP SIGNATURE-----\n"
+PGP_SIGNATURE = "-----BEGIN PGP SIGNATURE-----\n\nAQID\n-----END PGP SIGNATURE-----\n"
 
 
 def write_readme(repository_root: Path, current: str, fallback: str) -> None:
@@ -90,6 +91,8 @@ class FakeClient:
         self.queried_titles: list[str] = []
         self.queried_branches: list[str] = []
         self.queried_refs: list[str] = []
+        self.version_refs: list[str] = []
+        self.annotated_tag_queries: list[str] = []
         self.tag_refs = {
             CURRENT_TAG: tag_ref(CURRENT_TAG, CURRENT_TAG_OBJECT),
             CANDIDATE_TAG: tag_ref(CANDIDATE_TAG, CANDIDATE_TAG_OBJECT),
@@ -110,6 +113,10 @@ class FakeClient:
             ("meson_options.txt", CURRENT_COMMIT): None,
             ("meson_options.txt", CANDIDATE_COMMIT): None,
         }
+        self.version_contents = {
+            CURRENT_COMMIT: "5.1.0\n",
+            CANDIDATE_COMMIT: "5.1.1\n",
+        }
 
     def latest_release(self):
         return self.release
@@ -123,11 +130,16 @@ class FakeClient:
         return self.tag_refs[tag]
 
     def annotated_tag(self, tag_object_sha: str) -> dict:
+        self.annotated_tag_queries.append(tag_object_sha)
         return self.tag_objects[tag_object_sha]
 
     def upstream_file_sha(self, path: str, ref: str) -> str | None:
         self.queried_refs.append(ref)
         return self.file_shas[(path, ref)]
+
+    def upstream_file_content(self, path: str, ref: str) -> str | None:
+        self.version_refs.append(ref)
+        return self.version_contents.get(ref)
 
 
 class WatchNoctaliaReleaseTests(unittest.TestCase):
@@ -167,6 +179,47 @@ class WatchNoctaliaReleaseTests(unittest.TestCase):
                 }
             )
 
+    def test_release_url_must_belong_to_expected_upstream_repository(self) -> None:
+        with self.assertRaises(WATCHER.WatcherError):
+            WATCHER.parse_stable_release(
+                {
+                    "draft": False,
+                    "prerelease": False,
+                    "tag_name": "v5.1.1",
+                    "html_url": "https://github.com/attacker/noctalia/releases/tag/v5.1.1",
+                }
+            )
+
+    def test_github_contents_decoder_accepts_line_wrapped_base64(self) -> None:
+        client = WATCHER.GitHubClient("test-token", "owner/repository")
+        payload = {
+            "type": "file",
+            "encoding": "base64",
+            "content": "NS4yLjEK\n",
+        }
+        with patch.object(client, "_request_json", return_value=payload) as request:
+            content = client.upstream_file_content("VERSION", CANDIDATE_COMMIT)
+
+        self.assertEqual(content, "5.2.1\n")
+        request.assert_called_once_with(
+            WATCHER.CONTENTS_API_URL.format(
+                repository=WATCHER.UPSTREAM_REPOSITORY, path="VERSION"
+            ),
+            query={"ref": CANDIDATE_COMMIT},
+            allow_not_found=True,
+        )
+
+    def test_github_contents_decoder_rejects_invalid_base64_after_whitespace(self) -> None:
+        client = WATCHER.GitHubClient("test-token", "owner/repository")
+        payload = {
+            "type": "file",
+            "encoding": "base64",
+            "content": "NS4yLjEK\n!?",
+        }
+        with patch.object(client, "_request_json", return_value=payload):
+            with self.assertRaises(WATCHER.WatcherError):
+                client.upstream_file_content("VERSION", CANDIDATE_COMMIT)
+
     def test_valid_annotated_signed_tag_is_accepted(self) -> None:
         provenance = WATCHER.tag_provenance(self.candidate_client(), CANDIDATE_TAG)
 
@@ -175,23 +228,34 @@ class WatchNoctaliaReleaseTests(unittest.TestCase):
         self.assertTrue(provenance.signature_verified)
         self.assertEqual(provenance.verification_reason, "valid")
 
-    def test_lightweight_tag_is_rejected(self) -> None:
+    def test_lightweight_tag_is_accepted_without_annotated_lookup(self) -> None:
         client = self.candidate_client()
         client.tag_refs[CANDIDATE_TAG] = tag_ref(
             CANDIDATE_TAG, CANDIDATE_COMMIT, object_type="commit"
         )
 
-        with self.assertRaises(WATCHER.WatcherError):
-            WATCHER.tag_provenance(client, CANDIDATE_TAG)
+        provenance = WATCHER.tag_provenance(client, CANDIDATE_TAG)
 
-    def test_unverified_tag_is_rejected(self) -> None:
+        self.assertEqual(provenance.tag_type, "lightweight")
+        self.assertIsNone(provenance.tag_object_sha)
+        self.assertEqual(provenance.target_commit_sha, CANDIDATE_COMMIT)
+        self.assertFalse(provenance.signature_verified)
+        self.assertEqual(provenance.verification_reason, "not-applicable")
+        self.assertEqual(client.annotated_tag_queries, [])
+
+    def test_annotated_unsigned_tag_is_accepted_unverified(self) -> None:
         client = self.candidate_client()
         client.tag_objects[CANDIDATE_TAG_OBJECT]["verification"]["verified"] = False
+        client.tag_objects[CANDIDATE_TAG_OBJECT]["verification"]["reason"] = "unsigned"
+        client.tag_objects[CANDIDATE_TAG_OBJECT]["verification"]["signature"] = None
+        client.tag_objects[CANDIDATE_TAG_OBJECT]["verification"]["payload"] = None
 
-        with self.assertRaises(WATCHER.WatcherError):
-            WATCHER.tag_provenance(client, CANDIDATE_TAG)
+        provenance = WATCHER.tag_provenance(client, CANDIDATE_TAG)
 
-    def test_non_valid_verification_reason_is_rejected(self) -> None:
+        self.assertFalse(provenance.signature_verified)
+        self.assertEqual(provenance.verification_reason, "unsigned")
+
+    def test_verified_tag_with_non_valid_reason_is_rejected(self) -> None:
         client = self.candidate_client()
         client.tag_objects[CANDIDATE_TAG_OBJECT]["verification"]["reason"] = "unsigned"
 
@@ -221,6 +285,13 @@ class WatchNoctaliaReleaseTests(unittest.TestCase):
     def test_malformed_tag_object_sha_is_rejected(self) -> None:
         client = self.candidate_client()
         client.tag_refs[CANDIDATE_TAG]["object"]["sha"] = "short"
+
+        with self.assertRaises(WATCHER.WatcherError):
+            WATCHER.tag_provenance(client, CANDIDATE_TAG)
+
+    def test_malformed_tag_ref_is_rejected(self) -> None:
+        client = self.candidate_client()
+        client.tag_refs[CANDIDATE_TAG]["ref"] = "refs/tags/other"
 
         with self.assertRaises(WATCHER.WatcherError):
             WATCHER.tag_provenance(client, CANDIDATE_TAG)
@@ -270,6 +341,14 @@ class WatchNoctaliaReleaseTests(unittest.TestCase):
         with self.assertRaises(WATCHER.WatcherError):
             WATCHER.tag_provenance(client, CANDIDATE_TAG)
 
+        client = self.candidate_client()
+        client.tag_objects[CANDIDATE_TAG_OBJECT]["verification"]["signature"] = (
+            "-----BEGIN PGP SIGNATURE-----\n\nnot-base64!\n"
+            "-----END PGP SIGNATURE-----"
+        )
+        with self.assertRaises(WATCHER.WatcherError):
+            WATCHER.tag_provenance(client, CANDIDATE_TAG)
+
     def test_payload_mismatches_are_rejected(self) -> None:
         client = self.candidate_client()
         client.tag_objects[CANDIDATE_TAG_OBJECT]["verification"]["payload"] = "\n".join(
@@ -310,6 +389,7 @@ class WatchNoctaliaReleaseTests(unittest.TestCase):
 
         self.assertEqual(result.outcome, "release-available")
         self.assertEqual(set(client.queried_refs), {CURRENT_COMMIT, CANDIDATE_COMMIT})
+        self.assertEqual(set(client.version_refs), {CURRENT_COMMIT, CANDIDATE_COMMIT})
         assert result.packaging_changes is not None
         self.assertEqual(result.packaging_changes.packaging_md, "modified")
         self.assertEqual(result.packaging_changes.meson_build, "unchanged")
@@ -323,8 +403,44 @@ class WatchNoctaliaReleaseTests(unittest.TestCase):
         WATCHER.write_summary(result, summary_path)
 
         self.assertEqual(payload["provenance"]["tag_object_sha"], CANDIDATE_TAG_OBJECT)
-        self.assertIn("OpenPGP signature: verified by GitHub", summary_path.read_text())
+        self.assertEqual(payload["provenance"]["tag_type"], "annotated")
+        self.assertIn("GitHub tag signature verification: verified", summary_path.read_text())
         self.assertIn(CANDIDATE_COMMIT, summary_path.read_text())
+
+    def test_latest_version_is_validated_even_when_up_to_date(self) -> None:
+        client = FakeClient(self.release("5.1.0"))
+        client.version_contents[CURRENT_COMMIT] = "5.1.1\n"
+
+        with self.assertRaises(WATCHER.WatcherError):
+            WATCHER.watch(client, self.repository_root, dry_run=False)
+
+        self.assertEqual(client.version_refs, [CURRENT_COMMIT])
+
+    def test_candidate_version_missing_malformed_mismatch_and_exact_sha(self) -> None:
+        for content in (None, "", "5.1.1 extra\n", "5.1.0\n"):
+            client = self.candidate_client()
+            if content is None:
+                del client.version_contents[CANDIDATE_COMMIT]
+            else:
+                client.version_contents[CANDIDATE_COMMIT] = content
+            with self.subTest(content=content), self.assertRaises(WATCHER.WatcherError):
+                WATCHER.watch(client, self.repository_root, dry_run=False)
+            self.assertEqual(client.version_refs, [CANDIDATE_COMMIT])
+
+    def test_lightweight_result_summary_and_json_report_actual_provenance(self) -> None:
+        client = self.candidate_client()
+        client.tag_refs[CANDIDATE_TAG] = tag_ref(
+            CANDIDATE_TAG, CANDIDATE_COMMIT, object_type="commit"
+        )
+        result = WATCHER.watch(client, self.repository_root, dry_run=False)
+        summary_path = self.repository_root / "lightweight-summary.md"
+        WATCHER.write_summary(result, summary_path)
+
+        self.assertIsNone(WATCHER.result_payload(result)["provenance"]["tag_object_sha"])
+        summary = summary_path.read_text()
+        self.assertIn("Tag type: lightweight", summary)
+        self.assertIn("GitHub tag signature verification: not applicable", summary)
+        self.assertNotIn("Tag object:", summary)
 
     def test_dry_run_reports_but_does_not_mutate_repository(self) -> None:
         before = sorted(path.name for path in self.repository_root.rglob("*.ebuild"))
