@@ -65,9 +65,10 @@ happens when one of those commands is explicitly run.
 
 Before merging a Draft PR:
 
-1. Confirm that the release has a stable `vX.Y.Z` tag; prereleases and `main`
-   are not used. Before preparing a candidate, the automation verifies that the
-   tag is annotated and that GitHub confirms its OpenPGP signature.
+1. Confirm that a stable release with a `vX.Y.Z` tag is published; prereleases
+   and `main` are not used. Before preparing a candidate, the automation resolves
+   the release tag to an exact commit SHA and checks that `VERSION` at that
+   commit matches the release version.
 2. Review the release notes, provenance and signing identity if anything looks
    unusual, and check upstream changes to `PACKAGING.md`.
 3. Review the generated ebuild and Manifest, the `pkgcheck scan` result, and
@@ -83,11 +84,11 @@ workflow runs daily at 06:17 UTC and can also be started manually through
 `workflow_dispatch`.
 
 ```text
-upstream release
+stable GitHub Release
       ↓
-signed annotated tag verification
+release tag → exact commit SHA → VERSION match
       ↓
-packaging diff
+packaging inspection / preparation
       ↓
 Draft PR
       ↓
@@ -97,6 +98,9 @@ merge
       ↓
 candidate becomes current, previous current becomes fallback
 ```
+
+Git tag signature information, when available, is retained as additional
+provenance metadata. A signature is not required for stable release acceptance.
 
 [`scripts/watch_noctalia_release.py`](scripts/watch_noctalia_release.py)
 requests the latest release through the GitHub API, accepts only strict

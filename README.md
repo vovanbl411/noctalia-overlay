@@ -66,9 +66,9 @@ doas emerge -pv gui-apps/noctalia
 
 Перед merge Draft PR:
 
-1. Убедиться, что release имеет стабильный тег `vX.Y.Z`; prerelease и `main` не
-   используются. Automation до подготовки candidate проверяет, что tag
-   annotated и его OpenPGP signature подтверждена GitHub.
+1. Убедиться, что опубликован stable release с тегом `vX.Y.Z`; prerelease и
+   `main` не используются. Automation разрешает release tag в exact commit SHA
+   и проверяет, что `VERSION` в этом commit совпадает с версией release.
 2. Проверить release notes, provenance/signing identity при необычных признаках
    и изменения `PACKAGING.md` у upstream.
 3. Проверить сгенерированные ebuild и Manifest, результат `pkgcheck scan` и
@@ -85,11 +85,11 @@ Workflow
 Процесс выглядит так:
 
 ```text
-upstream release
+stable GitHub Release
       ↓
-signed annotated tag verification
+release tag → exact commit SHA → VERSION match
       ↓
-packaging diff
+packaging inspection / preparation
       ↓
 Draft PR
       ↓
@@ -99,6 +99,9 @@ merge
       ↓
 candidate becomes current, previous current becomes fallback
 ```
+
+Подпись Git tag, если она есть, сохраняется как дополнительная provenance
+metadata. Она не является обязательным условием принятия stable release.
 
 [`scripts/watch_noctalia_release.py`](scripts/watch_noctalia_release.py)
 запрашивает latest release через GitHub API, принимает только строгие теги

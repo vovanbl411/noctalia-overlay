@@ -28,7 +28,7 @@ from overlay_policy import (  # noqa: E402
 )
 
 
-HANDOFF_SCHEMA_VERSION = 1
+HANDOFF_SCHEMA_VERSION = 2
 MAX_HANDOFF_FILE_SIZE = 1024 * 1024
 MANIFEST_PATH = "gui-apps/noctalia/Manifest"
 PACKAGING_CHANGE_VALUES = frozenset({"modified", "unchanged", "not present"})
@@ -47,10 +47,11 @@ class HandoffError(OverlayPolicyError):
 
 @dataclass(frozen=True)
 class UpstreamProvenance:
-    """Minimal GitHub-verified annotated-tag metadata carried to publish."""
+    """Validated tag resolution and optional GitHub signature metadata."""
 
     tag: str
-    tag_object_sha: str
+    tag_type: str
+    tag_object_sha: str | None
     target_commit_sha: str
     signature_verified: bool
     verification_reason: str
@@ -206,6 +207,7 @@ def _parse_verified_at(value: object) -> str | None:
 def _parse_provenance(value: object, release_tag: str) -> UpstreamProvenance:
     expected_fields = {
         "tag",
+        "tag_type",
         "tag_object_sha",
         "target_commit_sha",
         "signature_verified",
@@ -216,21 +218,42 @@ def _parse_provenance(value: object, release_tag: str) -> UpstreamProvenance:
         raise HandoffError("Handoff provenance has unexpected fields.")
     if value["tag"] != release_tag:
         raise HandoffError("Handoff provenance tag does not match the release tag.")
-    # Artifact — недоверенный input. Сохраняем точные условия принятия watcher,
-    # а не считаем verification любое непустое status-значение.
-    if value["signature_verified"] is not True:
-        raise HandoffError("Handoff provenance signature is not verified.")
-    if value["verification_reason"] != "valid":
+    tag_type = value["tag_type"]
+    signature_verified = value["signature_verified"]
+    reason = value["verification_reason"]
+    verified_at = _parse_verified_at(value["verified_at"])
+    if type(signature_verified) is not bool:
+        raise HandoffError("Handoff provenance signature_verified must be boolean.")
+    if not isinstance(reason, str) or not reason:
         raise HandoffError("Handoff provenance verification reason is invalid.")
+    target_commit_sha = _parse_commit(
+        value["target_commit_sha"], "target_commit_sha"
+    )
+    if tag_type == "lightweight":
+        if (
+            value["tag_object_sha"] is not None
+            or signature_verified is not False
+            or reason != "not-applicable"
+            or verified_at is not None
+        ):
+            raise HandoffError("Handoff lightweight provenance is inconsistent.")
+        tag_object_sha = None
+    elif tag_type == "annotated":
+        tag_object_sha = _parse_commit(value["tag_object_sha"], "tag_object_sha")
+        if signature_verified and reason != "valid":
+            raise HandoffError("Verified handoff provenance must have reason valid.")
+        if not signature_verified and reason in {"valid", "not-applicable"}:
+            raise HandoffError("Unverified annotated provenance has a contradictory reason.")
+    else:
+        raise HandoffError("Handoff provenance tag_type is invalid.")
     return UpstreamProvenance(
         tag=release_tag,
-        tag_object_sha=_parse_commit(value["tag_object_sha"], "tag_object_sha"),
-        target_commit_sha=_parse_commit(
-            value["target_commit_sha"], "target_commit_sha"
-        ),
-        signature_verified=True,
-        verification_reason="valid",
-        verified_at=_parse_verified_at(value["verified_at"]),
+        tag_type=tag_type,
+        tag_object_sha=tag_object_sha,
+        target_commit_sha=target_commit_sha,
+        signature_verified=signature_verified,
+        verification_reason=reason,
+        verified_at=verified_at,
     )
 
 
@@ -426,6 +449,7 @@ def create_handoff(
         "release_url": handoff.release_url,
         "provenance": {
             "tag": handoff.provenance.tag,
+            "tag_type": handoff.provenance.tag_type,
             "tag_object_sha": handoff.provenance.tag_object_sha,
             "target_commit_sha": handoff.provenance.target_commit_sha,
             "signature_verified": handoff.provenance.signature_verified,
@@ -512,17 +536,26 @@ def draft_pull_request_body(handoff: ReleaseHandoff) -> str:
             "- Manifest generated",
             "- Exactly two stable ebuilds",
             "- Python unit tests",
-            "- OpenPGP tag signature verified by GitHub",
+            "- Stable release and exact commit VERSION verified",
             "- `pkgcheck scan`",
             "",
             "## Upstream provenance",
             "",
-            "- Annotated Git tag: verified",
-            "- OpenPGP signature: verified by GitHub",
-            f"- Tag object: `{handoff.provenance.tag_object_sha}`",
+            f"- Tag type: {handoff.provenance.tag_type}",
             f"- Target commit: `{handoff.provenance.target_commit_sha}`",
+            "- GitHub tag signature verification: "
+            f"{'verified' if handoff.provenance.signature_verified else 'not applicable' if handoff.provenance.tag_type == 'lightweight' else 'not verified'}",
             f"- Verification reason: `{handoff.provenance.verification_reason}`",
-            f"- Verified at: `{handoff.provenance.verified_at or 'not reported'}`",
+            *(
+                (f"- Tag object: `{handoff.provenance.tag_object_sha}`",)
+                if handoff.provenance.tag_object_sha is not None
+                else ()
+            ),
+            *(
+                (f"- Verified at: `{handoff.provenance.verified_at}`",)
+                if handoff.provenance.verified_at is not None
+                else ()
+            ),
             "",
             "## Upstream packaging changes",
             "",

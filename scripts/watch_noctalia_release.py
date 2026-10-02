@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import os
 import re
@@ -65,10 +67,11 @@ class PackagingChanges:
 
 @dataclass(frozen=True)
 class TagProvenance:
-    """Minimal GitHub-verified provenance for one annotated upstream tag."""
+    """Tag and GitHub signature provenance for one upstream release."""
 
     tag: str
-    tag_object_sha: str
+    tag_type: str
+    tag_object_sha: str | None
     target_commit_sha: str
     signature_verified: bool
     verification_reason: str
@@ -94,6 +97,8 @@ class ReleaseClient(Protocol):
     def annotated_tag(self, tag_object_sha: str) -> dict[str, Any]: ...
 
     def upstream_file_sha(self, path: str, ref: str) -> str | None: ...
+
+    def upstream_file_content(self, path: str, ref: str) -> str | None: ...
 
 
 class GitHubClient:
@@ -149,6 +154,34 @@ class GitHubClient:
                 f"GitHub API returned an invalid response for {path}."
             )
         return sha
+
+    def upstream_file_content(self, path: str, ref: str) -> str | None:
+        payload = self._request_json(
+            CONTENTS_API_URL.format(repository=UPSTREAM_REPOSITORY, path=quote(path)),
+            query={"ref": ref},
+            allow_not_found=True,
+        )
+        if payload is None:
+            return None
+        content = payload.get("content")
+        if (
+            payload.get("type") != "file"
+            or payload.get("encoding") != "base64"
+            or not isinstance(content, str)
+        ):
+            raise WatcherError(f"GitHub API returned invalid content for {path}.")
+        try:
+            normalized = "".join(
+                character
+                for character in content
+                if character not in " \t\r\n\v\f"
+            )
+            decoded = base64.b64decode(normalized, validate=True)
+            return decoded.decode("utf-8", errors="strict")
+        except (binascii.Error, ValueError, UnicodeDecodeError) as error:
+            raise WatcherError(
+                f"GitHub API returned invalid Base64 or UTF-8 content for {path}."
+            ) from error
 
     def _request_json(
         self,
@@ -218,7 +251,15 @@ def parse_stable_release(payload: dict[str, Any]) -> Release:
         raise WatcherError(f"The latest upstream tag is not stable semver: {tag}.")
 
     parsed_url = urlparse(release_url)
-    if parsed_url.scheme != "https" or parsed_url.netloc != "github.com":
+    expected_path = f"/noctalia-dev/noctalia/releases/tag/{tag}"
+    if (
+        parsed_url.scheme != "https"
+        or parsed_url.netloc != "github.com"
+        or parsed_url.path != expected_path
+        or parsed_url.params
+        or parsed_url.query
+        or parsed_url.fragment
+    ):
         raise WatcherError("The latest upstream release has an unexpected URL.")
     return Release(tag=tag, version=tuple(map(int, match.groups())), url=release_url)
 
@@ -244,12 +285,47 @@ def _verified_at(value: object) -> str | None:
 def _verified_signature(value: object) -> None:
     if not isinstance(value, str):
         raise WatcherError("GitHub API returned a missing tag signature.")
-    signature = value.strip()
-    if not (
-        signature.startswith("-----BEGIN PGP SIGNATURE-----")
-        and signature.endswith("-----END PGP SIGNATURE-----")
+    lines = value.strip().replace("\r\n", "\n").splitlines()
+    if (
+        len(lines) < 4
+        or lines[0] != "-----BEGIN PGP SIGNATURE-----"
+        or lines[-1] != "-----END PGP SIGNATURE-----"
     ):
         raise WatcherError("GitHub API returned a non-OpenPGP tag signature.")
+    body_lines = lines[1:-1]
+    if body_lines and body_lines[0] == "":
+        body_lines = body_lines[1:]
+    if body_lines and ": " in body_lines[0] and not re.fullmatch(
+        r"[A-Za-z0-9+/]+=*", body_lines[0]
+    ):
+        try:
+            separator = body_lines.index("")
+        except ValueError as error:
+            raise WatcherError(
+                "GitHub API returned a malformed OpenPGP signature."
+            ) from error
+        if not all(
+            re.fullmatch(r"[A-Za-z0-9-]+: .+", line)
+            for line in body_lines[:separator]
+        ):
+            raise WatcherError("GitHub API returned a malformed OpenPGP signature.")
+        body_lines = body_lines[separator + 1 :]
+    if body_lines and body_lines[-1].startswith("="):
+        checksum = body_lines.pop()[1:]
+        try:
+            decoded_checksum = base64.b64decode(checksum, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise WatcherError("GitHub API returned a malformed OpenPGP signature.") from error
+        if len(decoded_checksum) != 3:
+            raise WatcherError("GitHub API returned a malformed OpenPGP signature.")
+    if not body_lines or any(not line for line in body_lines):
+        raise WatcherError("GitHub API returned a malformed OpenPGP signature.")
+    try:
+        decoded_signature = base64.b64decode("".join(body_lines), validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise WatcherError("GitHub API returned a malformed OpenPGP signature.") from error
+    if not decoded_signature:
+        raise WatcherError("GitHub API returned a malformed OpenPGP signature.")
 
 
 def _validate_signed_payload(payload: object, tag: str, target_commit_sha: str) -> None:
@@ -269,16 +345,25 @@ def _validate_signed_payload(payload: object, tag: str, target_commit_sha: str) 
 
 
 def tag_provenance(client: ReleaseClient, tag: str) -> TagProvenance:
-    """Verify a stable release's signed annotated tag through GitHub's Git API."""
-    # Сначала разрешаем ref: ref прямо на commit — это lightweight tag без
-    # signed annotated-tag object, который можно было бы проверить.
+    """Resolve the release tag to a commit and retain GitHub signature metadata."""
     ref_payload = client.tag_ref(tag)
     ref = ref_payload.get("ref")
     ref_object = ref_payload.get("object")
     if ref != f"refs/tags/{tag}" or not isinstance(ref_object, dict):
         raise WatcherError("GitHub API returned an invalid tag ref response.")
-    if ref_object.get("type") != "tag":
-        raise WatcherError("Upstream release tag must be an annotated Git tag.")
+    object_type = ref_object.get("type")
+    if object_type == "commit":
+        return TagProvenance(
+            tag=tag,
+            tag_type="lightweight",
+            tag_object_sha=None,
+            target_commit_sha=_full_git_sha(ref_object.get("sha"), "target commit"),
+            signature_verified=False,
+            verification_reason="not-applicable",
+            verified_at=None,
+        )
+    if object_type != "tag":
+        raise WatcherError("GitHub API returned an invalid tag ref object type.")
     tag_object_sha = _full_git_sha(ref_object.get("sha"), "tag ref object")
 
     # Второй response сверяется с SHA из ref, чтобы GitHub responses от двух
@@ -293,25 +378,56 @@ def tag_provenance(client: ReleaseClient, tag: str) -> TagProvenance:
         raise WatcherError("Upstream annotated tag must point to a commit.")
     target_commit_sha = _full_git_sha(target.get("sha"), "target commit")
 
-    # На этом этапе GitHub — verification authority. Truthy value или reason
-    # не равный "valid" намеренно недостаточны для продолжения.
     verification = tag_payload.get("verification")
     if not isinstance(verification, dict):
         raise WatcherError("GitHub API returned missing tag verification metadata.")
-    if verification.get("verified") is not True:
-        raise WatcherError("GitHub did not verify the upstream tag signature.")
-    if verification.get("reason") != "valid":
-        raise WatcherError("GitHub reported an invalid upstream tag signature.")
-    _verified_signature(verification.get("signature"))
-    _validate_signed_payload(verification.get("payload"), tag, target_commit_sha)
+    verified = verification.get("verified")
+    reason = verification.get("reason")
+    if type(verified) is not bool or not isinstance(reason, str) or not reason:
+        raise WatcherError(
+            "GitHub API returned malformed tag verification metadata."
+        )
+    if not {"signature", "payload", "verified_at"}.issubset(verification):
+        raise WatcherError("GitHub API returned incomplete tag verification metadata.")
+    if any(
+        verification.get(field) is not None
+        and not isinstance(verification.get(field), str)
+        for field in ("signature", "payload")
+    ):
+        raise WatcherError("GitHub API returned malformed tag verification metadata.")
+    verified_at = _verified_at(verification.get("verified_at"))
+    if verified:
+        if reason != "valid":
+            raise WatcherError(
+                "GitHub reported a contradictory verified tag signature."
+            )
+        _verified_signature(verification.get("signature"))
+        _validate_signed_payload(verification.get("payload"), tag, target_commit_sha)
+    elif reason in {"valid", "not-applicable"}:
+        raise WatcherError("GitHub reported a contradictory unverified tag signature.")
     return TagProvenance(
         tag=tag,
+        tag_type="annotated",
         tag_object_sha=tag_object_sha,
         target_commit_sha=target_commit_sha,
-        signature_verified=True,
-        verification_reason="valid",
-        verified_at=_verified_at(verification.get("verified_at")),
+        signature_verified=verified,
+        verification_reason=reason,
+        verified_at=verified_at,
     )
+
+
+def validate_upstream_version(
+    client: ReleaseClient, commit_sha: str, expected_version: Version
+) -> None:
+    """Require VERSION at an exact commit to contain only its expected version."""
+    content = client.upstream_file_content("VERSION", commit_sha)
+    if content is None:
+        raise WatcherError(f"Upstream VERSION is missing at commit {commit_sha}.")
+    expected = version_text(expected_version)
+    if re.fullmatch(re.escape(expected) + r"(?:\r?\n)?", content) is None:
+        raise WatcherError(
+            f"Upstream VERSION at commit {commit_sha} does not match {expected}."
+        )
 
 
 def draft_pull_request_title(release: Release) -> str:
@@ -353,6 +469,7 @@ def watch(
     # Проверяем даже уже packaged latest release: изменённый или invalid tag
     # должен завершить scheduled run ошибкой, а не тихим up-to-date.
     provenance = tag_provenance(client, release.tag)
+    validate_upstream_version(client, provenance.target_commit_sha, release.version)
     state = validate_overlay(repository_root)
     if state.current.version >= release.version:
         return WatchResult("up-to-date", state.current.version, release, provenance)
@@ -365,6 +482,9 @@ def watch(
     # IDs, а не по tag names, которые upstream может позднее переместить.
     previous_provenance = tag_provenance(
         client, f"v{version_text(state.current.version)}"
+    )
+    validate_upstream_version(
+        client, previous_provenance.target_commit_sha, state.current.version
     )
     changes = packaging_changes(
         client,
@@ -400,12 +520,21 @@ def write_summary(result: WatchResult, summary_path: Path | None) -> None:
         "",
         "Upstream provenance:",
         "",
-        "- Tag type: annotated",
-        "- OpenPGP signature: verified by GitHub",
-        f"- Verification reason: `{result.provenance.verification_reason}`",
-        f"- Tag object: `{result.provenance.tag_object_sha}`",
+        f"- Tag type: {result.provenance.tag_type}",
         f"- Target commit: `{result.provenance.target_commit_sha}`",
-        f"- Verified at: `{result.provenance.verified_at or 'not reported'}`",
+        "- GitHub tag signature verification: "
+        f"{'verified' if result.provenance.signature_verified else 'not applicable' if result.provenance.tag_type == 'lightweight' else 'not verified'}",
+        f"- Verification reason: `{result.provenance.verification_reason}`",
+        *(
+            (f"- Tag object: `{result.provenance.tag_object_sha}`",)
+            if result.provenance.tag_object_sha is not None
+            else ()
+        ),
+        *(
+            (f"- Verified at: `{result.provenance.verified_at}`",)
+            if result.provenance.verified_at is not None
+            else ()
+        ),
         f"- Result: `{result.outcome}`",
     ]
     if result.packaging_changes is not None:

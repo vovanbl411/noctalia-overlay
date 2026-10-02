@@ -136,7 +136,7 @@ def draft_pull_request_body(
             "## Manual verification",
             "",
             "- [ ] Review upstream release notes.",
-            "- [ ] Verify the upstream tag and signature where applicable.",
+            "- [ ] Review upstream provenance/signing identity where applicable.",
             "- [ ] Review `PACKAGING.md` changes and dependency changes.",
             "- [ ] Run `emerge -pv gui-apps/noctalia`.",
             "- [ ] Install the candidate Noctalia version.",
