@@ -170,7 +170,12 @@ GitHub Actions, so image digests must be checked and updated manually from time
 to time.
 
 The scripts use only the Python standard library. Unit tests in `tests/` do not
-require GitHub access; CI checks `pkgcheck` and the Manifest.
+require GitHub access. The general [CI](.github/workflows/ci.yml) workflow runs
+only Python unit tests. Manifest regeneration and `pkgcheck scan --exit` run
+in the release workflow when preparing a Noctalia release PR. Manual changes
+to `virtual/notification-daemon/` are checked locally with `pkgcheck scan` and
+`emerge -pv virtual/notification-daemon`; a passing general CI run does not
+confirm these checks.
 
 ## Checking after an update
 
