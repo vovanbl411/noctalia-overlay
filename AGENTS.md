@@ -2,21 +2,22 @@
 
 ## Project Structure & Module Organization
 
-This is a personal Gentoo overlay for stable Noctalia releases. Package
-definitions and their `Manifest` live in `gui-apps/noctalia/`; keep each new
-ebuild named `noctalia-X.Y.Z.ebuild`. Repository metadata is in `metadata/`
-and `profiles/`. The GitHub release watcher is
+This is a personal Gentoo overlay for stable Noctalia releases and notification
+integration. Noctalia package definitions and their `Manifest` live in
+`gui-apps/noctalia/`; name each new Noctalia ebuild `noctalia-X.Y.Z.ebuild`.
+Repository metadata is in `metadata/` and `profiles/`. The GitHub release watcher is
 `scripts/watch_noctalia_release.py`; policy and preparation helpers are also
 in `scripts/`. Unit tests are in `tests/`. The scheduled workflow is under
 `.github/workflows/`.
 
 `virtual/notification-daemon/` is a small, manually maintained integration
-package that preserves upstream virtual semantics, including its EAPI.
+package that preserves upstream virtual EAPI, KEYWORDS, and semantics.
+It has no `SRC_URI` and needs no Manifest with `thin-manifests = true`.
 The release watcher and two-version rotation manage only `gui-apps/noctalia/`;
 the virtual does not participate in that rotation.
 
-Do not add a `9999` ebuild. This overlay deliberately packages only stable,
-versioned releases for `~amd64`.
+Do not add a `9999` ebuild. `gui-apps/noctalia/` deliberately contains exactly
+two stable, versioned releases for `~amd64`: current and fallback.
 
 ## Build, Test, and Development Commands
 
@@ -31,8 +32,11 @@ doas emerge -pv gui-apps/noctalia
 Run the first command after editing the automation. Run `pkgcheck scan` after
 an ebuild or Manifest change, then use the `emerge` preview to verify
 dependency resolution and that Portage selects this overlay. Generate or
-refresh the Manifest from the downloaded upstream release archive before
-submitting a new ebuild.
+refresh the Noctalia Manifest from the downloaded upstream release archive
+before submitting a new Noctalia ebuild. For manual changes to
+`virtual/notification-daemon/`, run `pkgcheck scan` locally and
+`emerge -pv virtual/notification-daemon` to verify overlay selection and
+dependency resolution; do not install packages as part of this validation.
 
 ## Coding Style & Naming Conventions
 
@@ -40,8 +44,9 @@ Keep Python compatible with the standard library only. Follow the existing
 style: four-space indentation, type annotations, `snake_case` for functions
 and variables, `PascalCase` for classes, and clear `WatcherError` messages.
 Keep network access in `GitHubClient` and make decision logic testable with a
-fake client. Follow Gentoo ebuild conventions: retain `EAPI=8`, use tabs in
-ebuild functions, and keep dependency blocks and metadata readable.
+fake client. Retain `EAPI=8` for `gui-apps/noctalia/` and upstream EAPI for
+`virtual/notification-daemon/`. Follow Gentoo ebuild conventions: use tabs in
+ebuild functions and keep dependency blocks and metadata readable.
 
 ## Testing Guidelines
 

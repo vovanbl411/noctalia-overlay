@@ -75,7 +75,7 @@ Thunderbird, работают. Проверенный 2026-10-07
 
 Локальный `virtual/notification-daemon-0-r1` сохраняет upstream providers,
 KEYWORDS и семантику USE-флагов `gnome`/`kde`, добавляя `gui-apps/noctalia` в
-fallback OR-group при `!gnome` и `!kde`. Ревизия `0-r1` старше upstream `0`:
+fallback OR-group при `!gnome` и `!kde`. Ревизия `0-r1` новее upstream `0`:
 при установленной Noctalia Portage может удовлетворить dependency без второго
 daemon и без `package.provided`. Этот virtual сопровождается вручную и не
 участвует в rotation двух версий Noctalia.
@@ -168,7 +168,13 @@ GitHub Actions, поэтому эти digest нужно периодически
 вручную.
 
 Скрипты используют только стандартную библиотеку Python. Unit-тесты в
-`tests/` не требуют доступа к GitHub; `pkgcheck` и Manifest проверяются в CI.
+`tests/` не требуют доступа к GitHub. Общий workflow
+[CI](.github/workflows/ci.yml) запускает только Python unit tests.
+Пересоздание Manifest и `pkgcheck scan --exit` выполняются в release workflow
+при подготовке Noctalia release PR. Ручные изменения
+`virtual/notification-daemon/` проверяются локально командами `pkgcheck scan`
+и `emerge -pv virtual/notification-daemon`; зелёный общий CI не подтверждает
+эти проверки.
 
 ## Проверка после обновления
 
