@@ -62,6 +62,42 @@ doas emerge -pv gui-apps/noctalia
 `doas emaint sync --auto`. Эта опция не создаёт фоновый таймер: синхронизация
 происходит только при явном запуске одной из этих команд.
 
+## Интеграция уведомлений с Portage
+
+На reference workstation Noctalia 5.2.1 предоставляет D-Bus service
+`org.freedesktop.Notifications`; внешние уведомления, включая уведомления
+Thunderbird, работают. Проверенный 2026-10-07
+[`::gentoo virtual/notification-daemon-0`](https://github.com/gentoo/gentoo/blob/master/virtual/notification-daemon/notification-daemon-0.ebuild)
+пока не знает Noctalia как provider. Поэтому `x11-libs/libnotify` с
+`PDEPEND="virtual/notification-daemon"` выбирает другой notification daemon.
+Стандартный fallback на `x11-misc/notification-daemon` тянет X11 stack через
+`gtk+[X]`, `cairo[X]` и `libXcursor`, что нежелательно для Wayland-only системы.
+
+Локальный `virtual/notification-daemon-0-r1` сохраняет upstream providers,
+KEYWORDS и семантику USE-флагов `gnome`/`kde`, добавляя `gui-apps/noctalia` в
+fallback OR-group при `!gnome` и `!kde`. Ревизия `0-r1` старше upstream `0`:
+при установленной Noctalia Portage может удовлетворить dependency без второго
+daemon и без `package.provided`. Этот virtual сопровождается вручную и не
+участвует в rotation двух версий Noctalia.
+
+После синхронизации оверлея и перехода на local virtual временная запись
+`virtual/notification-daemon-0` в `/etc/portage/profile/package.provided`
+больше не нужна. Удалите только эту запись и проверьте resolver:
+
+```bash
+emerge -pv virtual/notification-daemon
+```
+
+При `USE="-gnome -kde"` и установленной Noctalia должен выбираться
+`virtual/notification-daemon-0-r1::noctalia-overlay` без
+`x11-misc/notification-daemon` и без требования включить `USE=X` для `gtk+`
+или `cairo`.
+
+На reference workstation `x11-libs/libnotify` остаётся explicit world package:
+текущий Gentoo ebuild Thunderbird лишь предлагает его через
+`optfeature "desktop notifications"`, а обязательного `RDEPEND` на него нет.
+Собственный Thunderbird ebuild ради этой dependency не сопровождается.
+
 ## Проверка release PR
 
 Перед merge Draft PR:
