@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+	<!-- maintainer-needed -->
+	<longdescription>
+		This local virtual preserves the upstream notification-daemon providers
+		and additionally recognizes gui-apps/noctalia as a provider of
+		org.freedesktop.Notifications.
+	</longdescription>
+</pkgmetadata>

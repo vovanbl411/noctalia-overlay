@@ -61,6 +61,44 @@ because it provides other packages.
 `doas emaint sync --auto`. It does not create a background timer: syncing only
 happens when one of those commands is explicitly run.
 
+## Portage notification integration
+
+On the reference workstation, Noctalia 5.2.1 provides the D-Bus service
+`org.freedesktop.Notifications`; external notifications, including Thunderbird
+notifications, work. As checked on 2026-10-07,
+[`::gentoo virtual/notification-daemon-0`](https://github.com/gentoo/gentoo/blob/master/virtual/notification-daemon/notification-daemon-0.ebuild)
+does not yet recognize Noctalia as a provider. As a result, `x11-libs/libnotify`
+with `PDEPEND="virtual/notification-daemon"` selects another notification daemon.
+The default fallback to `x11-misc/notification-daemon` pulls in an X11 stack
+through `gtk+[X]`, `cairo[X]`, and `libXcursor`, which is undesirable on a
+Wayland-only system.
+
+The local `virtual/notification-daemon-0-r1` preserves upstream providers,
+KEYWORDS, and the semantics of the `gnome`/`kde` USE flags, adding
+`gui-apps/noctalia` to the fallback OR-group when both `!gnome` and `!kde` apply.
+Revision `0-r1` is newer than upstream `0`: with Noctalia installed, Portage can
+satisfy the dependency without a second daemon or `package.provided`. This
+virtual is maintained manually and does not participate in the rotation of
+the two Noctalia versions.
+
+After syncing the overlay and switching to the local virtual, the temporary
+`virtual/notification-daemon-0` entry in `/etc/portage/profile/package.provided`
+is no longer needed. Remove only that entry and check the resolver:
+
+```bash
+emerge -pv virtual/notification-daemon
+```
+
+With `USE="-gnome -kde"` and Noctalia installed, Portage should select
+`virtual/notification-daemon-0-r1::noctalia-overlay` without
+`x11-misc/notification-daemon` or a requirement to enable `USE=X` for `gtk+`
+or `cairo`.
+
+On the reference workstation, `x11-libs/libnotify` remains an explicit world
+package: the current Gentoo Thunderbird ebuild only suggests it through
+`optfeature "desktop notifications"` and has no mandatory `RDEPEND` on it.
+A custom Thunderbird ebuild is not maintained for this dependency.
+
 ## Checking a release PR
 
 Before merging a Draft PR:

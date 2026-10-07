@@ -10,6 +10,11 @@ and `profiles/`. The GitHub release watcher is
 in `scripts/`. Unit tests are in `tests/`. The scheduled workflow is under
 `.github/workflows/`.
 
+`virtual/notification-daemon/` is a small, manually maintained integration
+package that preserves upstream virtual semantics, including its EAPI.
+The release watcher and two-version rotation manage only `gui-apps/noctalia/`;
+the virtual does not participate in that rotation.
+
 Do not add a `9999` ebuild. This overlay deliberately packages only stable,
 versioned releases for `~amd64`.
 
