@@ -73,6 +73,14 @@ def write_watcher_result(path: Path) -> None:
     )
 
 
+def write_source_evidence(path: Path) -> None:
+    path.write_text(json.dumps({
+        "candidate": "5.2.0", "tag": "v5.2.0", "commit": "c" * 40,
+        "url": HANDOFF.source_url("v5.2.0"),
+        "archive": {"size": 42, "blake2b": "1" * 128, "sha512": "2" * 128},
+    }))
+
+
 class ReleaseHandoffTests(unittest.TestCase):
     def setUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
@@ -110,10 +118,23 @@ class ReleaseHandoffTests(unittest.TestCase):
             json.dumps(metadata), encoding="utf-8"
         )
 
+    def draft_body(self, handoff_root: Path, handoff) -> str:
+        evidence = self.root / "source.json"
+        write_source_evidence(evidence)
+        readiness = HANDOFF.record_readiness(handoff_root, evidence, {
+            "GITHUB_RUN_ID": "124",
+            "GITHUB_RUN_ATTEMPT": "2",
+            "GITHUB_SHA": "a" * 40,
+            "UPLOADED_ARTIFACT_ID": "321",
+            "UPLOADED_ARTIFACT_DIGEST": "d" * 64,
+        })
+        return HANDOFF.draft_pull_request_body(handoff, readiness)
+
     def test_only_a_real_release_is_publishable(self) -> None:
         self.assertFalse(HANDOFF.publish_is_required("up-to-date", False))
         self.assertFalse(HANDOFF.publish_is_required("already-reported", False))
         self.assertFalse(HANDOFF.publish_is_required("dry-run", True))
+        self.assertFalse(HANDOFF.publish_is_required("release-available", True))
         self.assertTrue(HANDOFF.publish_is_required("release-available", False))
 
     def test_real_release_creates_and_applies_valid_handoff(self) -> None:
@@ -142,7 +163,7 @@ class ReleaseHandoffTests(unittest.TestCase):
         handoff_root = self.create_handoff()
         handoff = HANDOFF.validate_handoff(handoff_root)
 
-        body = HANDOFF.draft_pull_request_body(handoff)
+        body = self.draft_body(handoff_root, handoff)
 
         self.assertIn("GitHub tag signature verification: verified", body)
         self.assertIn(f"Tag object: `{'b' * 40}`", body)
@@ -170,7 +191,7 @@ class ReleaseHandoffTests(unittest.TestCase):
         self.assertEqual(handoff.provenance.tag_type, "lightweight")
         self.assertIsNone(handoff.provenance.tag_object_sha)
         self.assertFalse(handoff.provenance.signature_verified)
-        body = HANDOFF.draft_pull_request_body(handoff)
+        body = self.draft_body(handoff_root, handoff)
         self.assertIn("Tag type: lightweight", body)
         self.assertIn("GitHub tag signature verification: not applicable", body)
         self.assertNotIn("OpenPGP signature: verified by GitHub", body)
@@ -187,6 +208,9 @@ class ReleaseHandoffTests(unittest.TestCase):
 
         self.assertFalse(handoff.provenance.signature_verified)
         self.assertEqual(handoff.provenance.verification_reason, "unsigned")
+        body = self.draft_body(handoff_root, handoff)
+        self.assertIn("GitHub tag signature verification: not verified", body)
+        self.assertIn("Verification reason: `unsigned`", body)
 
     def test_handoff_rejects_inconsistent_provenance_combinations(self) -> None:
         invalid_updates = (
@@ -446,6 +470,28 @@ class SourceArchiveTests(IsolatedGitTests):
         self.assertEqual(evidence["commit"], self.commit)
         self.assertEqual(evidence["archive"], HANDOFF.archive_integrity(distdir / self.archive.name))
 
+    def test_source_requires_exact_declaration_before_download(self) -> None:
+        write_overlay(self.root, ("5.1.0", "5.2.0"))
+        ebuild = self.root / HANDOFF.version_path((5, 2, 0))
+        ebuild.write_text(f"  {HANDOFF.SOURCE_URI}\n")
+        watcher_result = self.root / "watch.json"
+        write_watcher_result(watcher_result)
+        distdir = self.root / "distfiles"
+
+        with (
+            patch.object(HANDOFF.subprocess, "run") as run,
+            self.assertRaises(HANDOFF.HandoffError) as error,
+        ):
+            HANDOFF.verify_source(
+                self.root, watcher_result, "v5.2.0", distdir, self.root / "summary"
+            )
+
+        self.assertIn(str(ebuild), str(error.exception))
+        self.assertIn(HANDOFF.SOURCE_URI, str(error.exception))
+        self.assertIn("canonical archive verification", str(error.exception))
+        self.assertFalse(distdir.exists())
+        run.assert_not_called()
+
     def test_compare_manifest_hashes_size_and_retained_fallback(self) -> None:
         self.write_archive(self.tar)
         integrity = HANDOFF.archive_integrity(self.archive)
@@ -519,11 +565,7 @@ class PublicationTests(IsolatedGitTests):
             removed=(5, 0, 1), fallback=(5, 1, 0), candidate=(5, 2, 0),
         )
         self.evidence = self.root / "source.json"
-        self.evidence.write_text(json.dumps({
-            "candidate": "5.2.0", "tag": "v5.2.0", "commit": "c" * 40,
-            "url": HANDOFF.source_url("v5.2.0"),
-            "archive": {"size": 42, "blake2b": "1" * 128, "sha512": "2" * 128},
-        }))
+        write_source_evidence(self.evidence)
         self.env = {
             "GITHUB_RUN_ID": "124", "GITHUB_RUN_ATTEMPT": "2", "GITHUB_SHA": self.base,
             "GITHUB_REPOSITORY": HANDOFF.REPOSITORY, "GITHUB_REF": HANDOFF.MAIN_REF,
@@ -539,8 +581,8 @@ class PublicationTests(IsolatedGitTests):
         self.search = {"total_count": 0, "incomplete_results": False, "items": []}
         self.post_result = None
         self.git_calls = []
-        self.request_count = 0
-        self.on_request = lambda: None
+        self.api_calls = []
+        self.on_request = lambda operation: None
         self.before_push = lambda: None
 
     def head(self) -> str:
@@ -574,18 +616,23 @@ class PublicationTests(IsolatedGitTests):
         }
 
     def request(self, url, *, query=None, allow_not_found=False, data=None):
-        self.request_count += 1
-        self.on_request()
+        if url.startswith("https://api.github.com/search/issues?"):
+            self.api_calls.append("title search")
+            self.on_request("title search")
+            return self.search
+        self.assertEqual(url, f"https://api.github.com/repos/{HANDOFF.REPOSITORY}/pulls")
         if data is not None:
-            self.assertEqual(url, f"https://api.github.com/repos/{HANDOFF.REPOSITORY}/pulls")
+            self.api_calls.append("create draft")
+            self.on_request("create draft")
             self.pr_requests.append(data)
             if isinstance(self.post_result, Exception):
                 raise self.post_result
             return self.pr() if self.post_result is None else self.post_result
-        if url.startswith("https://api.github.com/search/issues?"):
-            return self.search
         self.assertEqual(query["head"], f"vovanbl411:{self.branch}")
-        return [p for p in self.pull_requests if query["state"] in ("all", p["state"])]
+        state = query["state"]
+        self.api_calls.append(f"exact head: {state}")
+        self.on_request("exact head")
+        return [p for p in self.pull_requests if state in ("all", p["state"])]
 
     def publish(self) -> None:
         git = HANDOFF.git
@@ -613,6 +660,11 @@ class PublicationTests(IsolatedGitTests):
         self.assertEqual(HANDOFF.publication_preflight(self.checkout, self.env)["artifact"], "321")
         self.publish()
         self.assertEqual(self.remote_head(), self.head())
+        self.assertEqual(self.api_calls, [
+            "title search", "exact head: all",
+            "title search", "exact head: all",
+            "create draft",
+        ])
         self.assertEqual(len(self.pr_requests), 1)
         self.assertEqual(self.pr_requests[0]["head"], self.branch)
         self.assertEqual(self.pr_requests[0]["base"], "main")
@@ -621,7 +673,12 @@ class PublicationTests(IsolatedGitTests):
         self.assertIn("https://github.com/vovanbl411/noctalia-overlay/actions/runs/124", body)
         self.assertIn("Prepare attempt: `2`", body)
         self.assertIn(f"Validated base SHA: `{self.base}`", body)
+        self.assertIn("Archive size: 42 bytes", body)
         self.assertIn(f"BLAKE2B: `{'1' * 128}`", body)
+        self.assertIn(f"SHA512: `{'2' * 128}`", body)
+        self.assertIn("**PACKAGING.md:** modified", body)
+        self.assertIn("`meson.build`: unchanged", body)
+        self.assertIn("`meson_options.txt`: not present", body)
         self.assertIn(f"Target commit: `{'c' * 40}`", body)
         self.assertIn("- [ ] Test network integration, audio, and the lock screen.", body)
         self.assertIn("Full source build and runtime checks: not run", body)
@@ -695,7 +752,7 @@ class PublicationTests(IsolatedGitTests):
         with self.assertRaisesRegex(HANDOFF.HandoffError, "SHA256 differs"):
             self.publish()
         self.assert_no_writes()
-        self.assertEqual(self.request_count, 0)
+        self.assertEqual(self.api_calls, [])
 
     def test_unexpected_artifact_path_is_rejected_even_with_valid_digest(self) -> None:
         self.pack_artifact(("../unexpected", b"extra"))
@@ -762,8 +819,8 @@ class PublicationTests(IsolatedGitTests):
         self.assert_no_writes()
 
     def test_stale_remote_base_blocks_push(self) -> None:
-        def move_main():
-            if self.request_count == 1:
+        def move_main(operation):
+            if operation == "title search":
                 subprocess.run(
                     ["git", "-C", str(self.checkout), "push", "origin", "HEAD:refs/heads/main"],
                     check=True, capture_output=True,
@@ -834,8 +891,8 @@ class PublicationTests(IsolatedGitTests):
         self.assert_no_writes()
 
     def test_existing_identical_branch_blocks_push(self) -> None:
-        def existing_branch():
-            if self.request_count == 1:
+        def existing_branch(operation):
+            if operation == "title search":
                 subprocess.run(
                     ["git", "-C", str(self.checkout), "push", "origin", f"HEAD:{self.candidate_ref}"],
                     check=True, capture_output=True,
@@ -897,8 +954,8 @@ class PublicationTests(IsolatedGitTests):
         self.assertIn("matches candidate commit", summary)
 
     def test_main_changes_before_pr_are_reported_after_confirmed_push(self) -> None:
-        def move_base():
-            if self.request_count == 4:
+        def move_base(operation):
+            if operation == "title search" and self.api_calls.count("title search") == 2:
                 self.set_remote_ref(HANDOFF.MAIN_REF, self.head())
 
         self.on_request = move_base
@@ -909,8 +966,8 @@ class PublicationTests(IsolatedGitTests):
         self.assertIn("Draft PR request: not run", self.summary.read_text())
 
     def test_candidate_changes_before_pr_are_reported(self) -> None:
-        def move_head():
-            if self.request_count == 4:
+        def move_head(operation):
+            if operation == "title search" and self.api_calls.count("title search") == 2:
                 self.set_remote_ref(self.candidate_ref, self.base)
 
         self.on_request = move_head
@@ -919,6 +976,19 @@ class PublicationTests(IsolatedGitTests):
         self.assertEqual(self.remote_head(), self.base)
         self.assertEqual(self.pr_requests, [])
         self.assertIn("Last confirmed write: created branch", self.summary.read_text())
+
+    def test_closed_exact_head_conflict_before_draft_pr_leaves_created_branch(self) -> None:
+        def report_closed_pr(operation):
+            if operation == "exact head" and any(args[0] == "push" for args in self.git_calls):
+                self.pull_requests = [self.pr(state="closed")]
+
+        self.on_request = report_closed_pr
+        with self.assertRaisesRegex(HANDOFF.HandoffError, "prior closed PR"):
+            self.publish()
+        self.assertEqual(self.remote_head(), self.head())
+        self.assertEqual(self.pr_requests, [])
+        self.assertIn("Draft PR request: not run", self.summary.read_text())
+        self.assertIn("Exact-head PR state: confirmed closed", self.summary.read_text())
 
     def test_post_failure_leaves_confirmed_branch_and_reports_unknown_pr(self) -> None:
         self.post_result = HANDOFF.WatcherError("GitHub API request failed with HTTP 500.")
@@ -930,8 +1000,8 @@ class PublicationTests(IsolatedGitTests):
         self.assertIn("closed-PR conflict separately", self.summary.read_text())
 
     def test_ambiguous_post_with_created_pr_reports_confirmed_readback(self) -> None:
-        def post_creates_pr():
-            if self.request_count == 7:
+        def post_creates_pr(operation):
+            if operation == "create draft":
                 self.pull_requests.append(self.pr())
 
         self.on_request = post_creates_pr

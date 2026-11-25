@@ -89,7 +89,8 @@ class FakeClient:
         self.release = release
         self.existing_pull_request = existing_pull_request
         self.queried_titles: list[str] = []
-        self.queried_branches: list[str] = []
+        self.head_queries: list[tuple[str, str]] = []
+        self.exact_head_prs: list[dict] = []
         self.queried_refs: list[str] = []
         self.version_refs: list[str] = []
         self.annotated_tag_queries: list[str] = []
@@ -121,10 +122,13 @@ class FakeClient:
     def latest_release(self):
         return self.release
 
-    def pull_request_exists(self, title: str, branch: str) -> bool:
+    def has_open_pull_request_matching_title(self, title: str) -> bool:
         self.queried_titles.append(title)
-        self.queried_branches.append(branch)
         return self.existing_pull_request
+
+    def pull_requests_for_head(self, branch: str, *, state: str) -> list[dict]:
+        self.head_queries.append((branch, state))
+        return self.exact_head_prs
 
     def tag_ref(self, tag: str) -> dict:
         return self.tag_refs[tag]
@@ -457,7 +461,17 @@ class WatchNoctaliaReleaseTests(unittest.TestCase):
 
         self.assertEqual(result.outcome, "already-reported")
         self.assertEqual(client.queried_titles, ["[release-bump] Noctalia v5.1.1"])
-        self.assertEqual(client.queried_branches, ["automation/noctalia-v5.1.1"])
+        self.assertEqual(client.head_queries, [])
+
+    def test_open_exact_head_pull_request_prevents_duplicate(self) -> None:
+        client = FakeClient(self.release("5.1.1"))
+        client.exact_head_prs = [{"state": "open"}]
+
+        result = WATCHER.watch(client, self.repository_root, dry_run=False)
+
+        self.assertEqual(result.outcome, "already-reported")
+        self.assertEqual(client.queried_titles, ["[release-bump] Noctalia v5.1.1"])
+        self.assertEqual(client.head_queries, [("automation/noctalia-v5.1.1", "open")])
 
 
 class GitHubPullRequestLookupTests(unittest.TestCase):
@@ -466,12 +480,12 @@ class GitHubPullRequestLookupTests(unittest.TestCase):
         self.title = "[release-bump] Noctalia v5.2.0"
         self.branch = "automation/noctalia-v5.2.0"
 
-    def test_complete_empty_search_requires_exact_open_head_lookup(self) -> None:
+    def test_empty_title_search_only_queries_search_endpoint(self) -> None:
         search = {"total_count": 0, "incomplete_results": False, "items": []}
-        with patch.object(self.client, "_request_payload", side_effect=[search, []]) as request:
-            self.assertFalse(self.client.pull_request_exists(self.title, self.branch))
-        self.assertEqual(request.call_args.kwargs["query"]["head"], f"owner:{self.branch}")
-        self.assertEqual(request.call_args.kwargs["query"]["state"], "open")
+        with patch.object(self.client, "_request_payload", return_value=search) as request:
+            self.assertFalse(self.client.has_open_pull_request_matching_title(self.title))
+        request.assert_called_once()
+        self.assertTrue(request.call_args.args[0].startswith(WATCHER.SEARCH_API_URL + "?"))
 
     def test_incomplete_or_malformed_search_is_not_a_definitive_result(self) -> None:
         valid = {"total_count": 0, "incomplete_results": False, "items": []}
@@ -487,7 +501,7 @@ class GitHubPullRequestLookupTests(unittest.TestCase):
             with self.subTest(payload=payload):
                 with patch.object(self.client, "_request_payload", return_value=payload) as request:
                     with self.assertRaisesRegex(WATCHER.WatcherError, "incomplete or malformed"):
-                        self.client.pull_request_exists(self.title, self.branch)
+                        self.client.has_open_pull_request_matching_title(self.title)
                 request.assert_called_once()
 
     def test_malformed_exact_head_read_is_inconclusive(self) -> None:

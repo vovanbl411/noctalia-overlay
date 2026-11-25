@@ -113,7 +113,7 @@ jobs:
 
       - name: Verify the canonical release archive
         id: source
-        if: steps.eligibility.outputs.publish_ready == 'true' && steps.rotation.outputs.prepared == 'true'
+        if: steps.eligibility.outputs.publish_ready == 'true' && steps.rotation.outputs.outcome == 'prepared'
         env:
           RELEASE_TAG: ${{ steps.watch.outputs.release_tag }}
         run: |
@@ -244,7 +244,7 @@ jobs:
         env:
           DISCOVERY: ${{ steps.watch.outcome }}
           UNIT_TESTS: ${{ steps.unit_tests.outcome }}
-          ROTATION: ${{ steps.rotation.outcome }}
+          ROTATION_STEP: ${{ steps.rotation.outcome }}
           SOURCE: ${{ steps.source.outcome }}
           GENTOO: ${{ steps.gentoo.outcome }}
           MANIFEST: ${{ steps.manifest.outcome }}
@@ -252,7 +252,7 @@ jobs:
           UPLOAD: ${{ steps.upload.outcome }}
           READY: ${{ steps.ready.outcome }}
         run: |
-          for gate in DISCOVERY UNIT_TESTS ROTATION SOURCE GENTOO MANIFEST HANDOFF UPLOAD READY; do
+          for gate in DISCOVERY UNIT_TESTS ROTATION_STEP SOURCE GENTOO MANIFEST HANDOFF UPLOAD READY; do
             case "${!gate}" in
               success) status=passed ;;
               failure) status=failed ;;

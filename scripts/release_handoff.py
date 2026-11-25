@@ -542,24 +542,10 @@ def apply_handoff(
     return handoff
 
 
-def draft_pull_request_body(handoff: ReleaseHandoff, readiness: dict | None = None) -> str:
+def draft_pull_request_body(handoff: ReleaseHandoff, readiness: dict) -> str:
     """Render the release evidence and manual-review checklist."""
-    evidence_lines = ()
-    if readiness is not None:
-        source = readiness["source"]
-        run_url = f"https://github.com/{REPOSITORY}/actions/runs/{readiness['run']}"
-        evidence_lines = (
-            f"- Workflow run: [{readiness['run']}]({run_url})",
-            f"- Prepare attempt: `{readiness['attempt']}`",
-            f"- Validated base SHA: `{readiness['base']}`",
-            f"- Canonical source archive: {source['url']}",
-            f"- Archive size: {source['archive']['size']} bytes",
-            f"- BLAKE2B: `{source['archive']['blake2b']}`",
-            f"- SHA512: `{source['archive']['sha512']}`",
-            "- Archive commit ID, gzip/tar integrity and both Manifest entries: passed",
-            "- Full source build and runtime checks: not run",
-            "",
-        )
+    source = readiness["source"]
+    run_url = f"https://github.com/{REPOSITORY}/actions/runs/{readiness['run']}"
     return "\n".join(
         (
             f"# Noctalia release: [{handoff.release_tag}]({handoff.release_url})",
@@ -579,7 +565,16 @@ def draft_pull_request_body(handoff: ReleaseHandoff, readiness: dict | None = No
             "- Stable release and exact commit VERSION verified",
             "- `pkgcheck scan`",
             "",
-            *evidence_lines,
+            f"- Workflow run: [{readiness['run']}]({run_url})",
+            f"- Prepare attempt: `{readiness['attempt']}`",
+            f"- Validated base SHA: `{readiness['base']}`",
+            f"- Canonical source archive: {source['url']}",
+            f"- Archive size: {source['archive']['size']} bytes",
+            f"- BLAKE2B: `{source['archive']['blake2b']}`",
+            f"- SHA512: `{source['archive']['sha512']}`",
+            "- Archive commit ID, gzip/tar integrity and both Manifest entries: passed",
+            "- Full source build and runtime checks: not run",
+            "",
             "## Upstream provenance",
             "",
             f"- Tag type: {handoff.provenance.tag_type}",
@@ -615,32 +610,6 @@ def draft_pull_request_body(handoff: ReleaseHandoff, readiness: dict | None = No
             "- [ ] Test network integration, audio, and the lock screen.",
         )
     )
-
-
-def write_pull_request_request(path: Path, handoff: ReleaseHandoff) -> None:
-    """Write the REST request only after validating every artifact field."""
-    payload = {
-        "base": "main",
-        "body": draft_pull_request_body(handoff),
-        "draft": True,
-        "head": handoff.branch,
-        "title": handoff.pull_request_title,
-    }
-    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
-
-
-def write_github_output(path: Path, handoff: ReleaseHandoff) -> None:
-    """Write shell-safe, validated values for the publish workflow steps."""
-    lines = (
-        f"release_tag={handoff.release_tag}",
-        f"base_commit={handoff.base_commit}",
-        f"candidate_version={version_text(handoff.candidate)}",
-        f"fallback_version={version_text(handoff.fallback)}",
-        f"removed_version={version_text(handoff.removed)}",
-        f"branch={handoff.branch}",
-    )
-    with path.open("a", encoding="utf-8") as output:
-        output.write("\n".join(lines) + "\n")
 
 
 def distfile_name(version: Version) -> str:
@@ -701,10 +670,12 @@ def verify_source(
     if tag != f"v{version_text(candidate)}":
         raise HandoffError("Source tag does not match a stable candidate.")
     _, provenance, _ = _watch_result_details(watch_result, tag)
-    if SOURCE_URI not in (source_root / version_path(candidate)).read_text(
-        encoding="utf-8"
-    ).splitlines():
-        raise HandoffError("Candidate ebuild does not use the canonical source URI.")
+    ebuild = source_root / version_path(candidate)
+    if SOURCE_URI not in ebuild.read_text(encoding="utf-8").splitlines():
+        raise HandoffError(
+            f"{ebuild}: expected the exact source declaration {SOURCE_URI}. "
+            "Portage must use the same archive URL and distfile name as canonical archive verification."
+        )
     url = source_url(tag)
     evidence = {
         "candidate": version_text(candidate),
@@ -1001,10 +972,10 @@ def verify_remote_base(root: Path, base: str, git_env: dict[str, str] | None) ->
 
 
 def check_pr_conflicts(client: GitHubClient, handoff: ReleaseHandoff) -> None:
-    if client.pull_requests_for_head(handoff.branch):
-        raise HandoffError("An open or prior closed PR for this exact candidate branch requires owner review.")
-    if client.pull_request_exists(handoff.pull_request_title, handoff.branch):
+    if client.has_open_pull_request_matching_title(handoff.pull_request_title):
         raise HandoffError("An open release PR conflicts with this candidate.")
+    if client.pull_requests_for_head(handoff.branch, state="all"):
+        raise HandoffError("An open or prior closed PR for this exact candidate branch requires owner review.")
 
 
 def create_remote_branch(root: Path, ref: str, git_env: dict[str, str] | None) -> None:
@@ -1156,13 +1127,6 @@ def main() -> int:
     create_parser.add_argument("--fallback-version", required=True)
     create_parser.add_argument("--candidate-version", required=True)
 
-    apply_parser = subparsers.add_parser("apply")
-    apply_parser.add_argument("--handoff-root", type=Path, required=True)
-    apply_parser.add_argument("--repository-root", type=Path, required=True)
-    apply_parser.add_argument("--expected-base-commit", required=True)
-    apply_parser.add_argument("--pull-request-request", type=Path, required=True)
-    apply_parser.add_argument("--github-output", type=Path, required=True)
-
     checkout_parser = subparsers.add_parser("verify-checkout")
     checkout_parser.add_argument("--repository-root", type=Path, required=True)
 
@@ -1212,14 +1176,6 @@ def main() -> int:
                 fallback=_parse_version(args.fallback_version, "fallback_version"),
                 candidate=_parse_version(args.candidate_version, "candidate_version"),
             )
-        elif args.command == "apply":
-            handoff = apply_handoff(
-                args.handoff_root,
-                args.repository_root,
-                expected_base_commit=args.expected_base_commit,
-            )
-            write_pull_request_request(args.pull_request_request, handoff)
-            write_github_output(args.github_output, handoff)
         elif args.command == "verify-checkout":
             verify_checkout(args.repository_root, os.environ["GITHUB_SHA"])
         elif args.command == "verify-source":
