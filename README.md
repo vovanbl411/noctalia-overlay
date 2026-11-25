@@ -2,14 +2,13 @@
 
 [English](README.en.md)
 
-Он нужен, чтобы
-сопровождать стабильные релизы Noctalia, не дожидаясь обновления в
-GURU. В оверлее намеренно нет live-версии `9999`.
+Оверлей позволяет сопровождать стабильные релизы Noctalia до их появления
+в GURU. Live-версии `9999` в оверлее нет.
 
-В `main` всегда поддерживаются ровно две стабильные версии Noctalia: текущая
-и предыдущая для быстрого rollback. Rotation выполняется только атомарно в
-release PR: новая версия добавляется, текущая становится fallback, а прежний
-fallback удаляется. До merge `main` не меняется.
+В `main` хранятся ровно две стабильные версии Noctalia, текущая и предыдущая
+для отката. В одном release PR добавляется кандидат, текущая версия остаётся
+резервной, прежняя резервная удаляется, а таблицы версий в обоих README
+обновляются. Владелец принимает ротацию, когда вручную сливает PR.
 
 ## Содержимое
 
@@ -20,8 +19,11 @@ fallback удаляется. До merge `main` не меняется.
 | `gui-apps/noctalia-5.5.0` | Предыдущая версия для отката |
 <!-- noctalia-versions:end -->
 
-Оверлей наследует eclass'ы из основного репозитория Gentoo. Для Noctalia
-сохраняется `KEYWORDS="~amd64"`, действующая запись `gui-apps/noctalia ~amd64` в `package.accept_keywords` остаётся нужна.
+Оверлей наследует eclass'ы из основного репозитория Gentoo и использует его
+профили. У ebuild Noctalia указан только `KEYWORDS="~amd64"`. Оставьте запись
+`gui-apps/noctalia ~amd64` в `package.accept_keywords`. У оверлея нет отдельного
+профиля Gentoo или результатов проверки по матрице других профилей и архитектур.
+Noctalia работает под Wayland. Ручная проверка релиза выполняется в Niri.
 
 Подробная схема CI, branch protection и repository security settings описана в
 [`docs/CI_AND_SECURITY.md`](docs/CI_AND_SECURITY.md).
@@ -62,13 +64,42 @@ doas emerge -pv gui-apps/noctalia
 `doas emaint sync --auto`. Эта опция не создаёт фоновый таймер: синхронизация
 происходит только при явном запуске одной из этих команд.
 
+## Установка и откат Noctalia
+
+Синхронизируйте оверлей, разрешите keyword и установите пакет.
+
+```bash
+doas emerge --ask gui-apps/noctalia::noctalia-overlay
+```
+
+У ebuild один собственный USE-флаг, `+jemalloc`. По умолчанию он включён,
+добавляет зависимость `dev-libs/jemalloc:=` и включает соответствующую функцию
+Meson. Чтобы отключить и зависимость, и функцию, укажите `-jemalloc` в
+`package.use`. Ebuild также предлагает дополнительные пакеты для управления
+яркостью (`app-misc/ddcutil`), батареей и устройствами питания
+(`sys-power/upower`), автоматической вставки из буфера (`gui-apps/wtype`) и
+аппаратно ускоренной записи экрана (`media-video/gpu-screen-recorder`).
+
+Для отката укажите точную резервную версию из таблицы выше. Сначала проверьте
+план отката, затем установите пакет. В командах ниже пример для `5.5.0`.
+
+```bash
+doas emerge -pv '=gui-apps/noctalia-5.5.0::noctalia-overlay'
+doas emerge --ask --oneshot '=gui-apps/noctalia-5.5.0::noctalia-overlay'
+```
+
+После смены версии проверьте `noctalia --version` и сценарии Niri ниже.
+Следующее обновление world может снова выбрать более новую версию.
+
 ## Интеграция уведомлений с Portage
 
-На reference workstation Noctalia 5.2.1 предоставляет D-Bus service
-`org.freedesktop.Notifications`; внешние уведомления, включая уведомления
-Thunderbird, работают. Проверенный 2026-10-07
+На тестовой рабочей станции Noctalia 5.2.1 предоставляла D-Bus-сервис
+`org.freedesktop.Notifications` и показывала внешние уведомления, в том числе
+из Thunderbird. Это наблюдение относится к указанным версии и машине.
+
+На 2026-10-07 ebuild пакета
 [`::gentoo virtual/notification-daemon-0`](https://github.com/gentoo/gentoo/blob/master/virtual/notification-daemon/notification-daemon-0.ebuild)
-пока не знает Noctalia как provider. Поэтому `x11-libs/libnotify` с
+не указывал Noctalia среди провайдеров. В той конфигурации `x11-libs/libnotify` с
 `PDEPEND="virtual/notification-daemon"` выбирает другой notification daemon.
 Стандартный fallback на `x11-misc/notification-daemon` тянет X11 stack через
 `gtk+[X]`, `cairo[X]` и `libXcursor`, что нежелательно для Wayland-only системы.
@@ -100,81 +131,58 @@ emerge -pv virtual/notification-daemon
 
 ## Проверка release PR
 
-Перед merge Draft PR:
-
-1. Убедиться, что опубликован stable release с тегом `vX.Y.Z`; prerelease и
-   `main` не используются. Automation разрешает release tag в exact commit SHA
-   и проверяет, что `VERSION` в этом commit совпадает с версией release.
-2. Проверить release notes, provenance/signing identity при необычных признаках
-   и изменения `PACKAGING.md` у upstream.
-3. Проверить сгенерированные ebuild и Manifest, результат `pkgcheck scan` и
-   выполнить `doas emerge -pv gui-apps/noctalia`.
-4. Установить candidate из ветки PR и проверить обычную Niri-сессию.
-5. Проверить панель, уведомления, сеть, звук и блокировку экрана. Только после
-   успешной проверки вручную merge Draft PR.
+Перед слиянием выполните [проверки приёмки](docs/CI_AND_SECURITY.md#приёмка-владельцем).
+Сверьте точный коммит PR и базу `main`, изменения ebuild и Manifest, изменения
+и происхождение upstream-релиза, отчёт Prepare по ссылке из PR и обязательную
+проверку CI. Выполните `doas emerge -pv gui-apps/noctalia`, установите кандидата
+из ветки PR и проверьте обычную сессию Niri. Перед ручным слиянием проверьте
+панель, уведомления, сеть, звук и блокировку экрана.
 
 ## Автоматизация релизов
 
-Workflow
 [Prepare Noctalia release](.github/workflows/noctalia-release-watcher.yml)
-запускается ежедневно в 06:17 UTC и вручную через `workflow_dispatch`.
-Процесс выглядит так:
-
-```text
-stable GitHub Release
-      ↓
-release tag → exact commit SHA → VERSION match
-      ↓
-packaging inspection / preparation
-      ↓
-Draft PR
-      ↓
-manual review + Niri test
-      ↓
-merge
-      ↓
-candidate becomes current, previous current becomes fallback
-```
-
-Подпись Git tag, если она есть, сохраняется как дополнительная provenance
-metadata. Она не является обязательным условием принятия stable release.
+запускается ежедневно в 06:17 UTC или вручную через `workflow_dispatch`.
+GitHub может задержать запуск по расписанию или отключить расписание
+в публичном репозитории после 60 дней без активности. В этих случаях
+доступен ручной запуск.
 
 [`scripts/watch_noctalia_release.py`](scripts/watch_noctalia_release.py)
-запрашивает latest release через GitHub API, принимает только строгие теги
-`vX.Y.Z`, проверяет policy двух версий и ищет уже открытый PR для этого тега.
-Поэтому повторный scheduled run не создаёт duplicate PR. Для нового релиза
-[`scripts/prepare_noctalia_release.py`](scripts/prepare_noctalia_release.py)
-создаёт candidate ebuild копированием current, удаляет прежний fallback и
-обновляет таблицу версий выше. После этого workflow в закреплённом Gentoo
-container пересоздаёт Manifest, запускает `pkgcheck scan --exit` и открывает Draft PR.
-В PR отдельно показано, менялись ли upstream `PACKAGING.md`, `meson.build` и
-`meson_options.txt`.
+проверяет последний стабильный релиз на GitHub, определяет коммит по тегу,
+сверяет `VERSION` в этом коммите и ищет открытые PR для релиза. Подпись тега,
+если она есть, дополняет сведения о происхождении. Допускаются и релизы без
+подписи. [`scripts/prepare_noctalia_release.py`](scripts/prepare_noctalia_release.py)
+копирует текущий ebuild, удаляет прежний резервный и обновляет обе таблицы
+версий в изолированной рабочей копии. Workflow проверяет канонический архив
+тега, создаёт и сверяет Manifest и запускает `pkgcheck scan --exit` в Gentoo.
+В Draft PR перечислены изменения upstream-файлов `PACKAGING.md`, `meson.build`
+и `meson_options.txt`. Там же указаны ссылка на запуск workflow и номер
+проверенной попытки Prepare.
 
-Параметр `dry_run` выполняет discovery, policy и расчёт будущей rotation,
-записывает summary, но не изменяет workspace, не создаёт branch, commit или PR.
-Read-only job `prepare` не имеет write permissions. Write permissions
-`contents: write` и `pull-requests: write` получает только `publish` после
-успешной подготовки минимального release artifact. Он не выполняет auto-merge
-и не устанавливает пакет на пользовательскую машину. GitHub может задержать
-scheduled run; в публичном репозитории расписание отключается после 60 дней
-без активности. В обоих случаях workflow можно запустить вручную.
+При `dry_run=true` workflow выполняет поиск релиза, проверяет политику,
+показывает план ротации и запускает unit-тесты. Проверки архива и Gentoo,
+а также публикация пропускаются. Только задание Publish получает права записи
+в репозиторий. Оно проверяет handoff и удалённую базу, создаёт ветку кандидата
+при её отсутствии и открывает Draft PR для ручной приёмки. Проверки источника,
+права, повторные запуски и восстановление описаны в
+[руководстве по CI и безопасности](docs/CI_AND_SECURITY.md).
 
-Чтобы workflow мог создавать Draft PR, владелец repository должен включить
-`Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests`.
-Этот параметр workflow не изменяет.
+Образы Gentoo закреплены по SHA-256 и обновляются вручную. Dependabot обновляет
+только GitHub Actions.
 
-Gentoo Docker images закреплены по SHA256 digest. Dependabot обновляет только
-GitHub Actions, поэтому эти digest нужно периодически проверять и обновлять
-вручную.
+## Локальные тесты
 
-Скрипты используют только стандартную библиотеку Python. Unit-тесты в
-`tests/` не требуют доступа к GitHub. Общий workflow
-[CI](.github/workflows/ci.yml) запускает только Python unit tests.
-Пересоздание Manifest и `pkgcheck scan --exit` выполняются в release workflow
-при подготовке Noctalia release PR. Ручные изменения
-`virtual/notification-daemon/` проверяются локально командами `pkgcheck scan`
-и `emerge -pv virtual/notification-daemon`; зелёный общий CI не подтверждает
-эти проверки.
+Запускайте из корня рабочей копии оверлея с Python 3 и Git в `PATH`. Тесты
+используют стандартную библиотеку Python и временные локальные
+Git-репозитории. Для них не нужны сеть и Portage.
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+[CI](.github/workflows/ci.yml) запускает этот набор unit-тестов. Для ручных
+изменений `virtual/notification-daemon/` выполните в Gentoo `pkgcheck scan` и
+`emerge -pv virtual/notification-daemon`. Эти проверки выполняются отдельно
+от общего CI и ротации Noctalia.
 
 ## Проверка после обновления
 

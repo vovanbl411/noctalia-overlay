@@ -19,9 +19,26 @@ the virtual does not participate in that rotation.
 Do not add a `9999` ebuild. `gui-apps/noctalia/` deliberately contains exactly
 two stable, versioned releases for `~amd64`: current and fallback.
 
+The tree on `main` defines the accepted package state. Use the ebuilds, Manifest,
+and repository metadata for packaging facts. The [README](README.en.md)
+describes local packaging policy, and the [CI and security guide](docs/CI_AND_SECURITY.en.md)
+describes validation and publication. Verify automation behavior against the
+workflows and scripts. The pilot targets the Release profile of
+[Gentoo Overlay Standard v0.1](https://github.com/vovanbl411/gentoo-overlay-standard/blob/212d0b66de2bb2bba1d9f97cc4f6a156b1e91ef8/STANDARD.md).
+Adoption under S2 remains a separate owner decision.
+
+In an ordinary automated release update, copy the current ebuild to the new
+stable version, retain the current ebuild as fallback, retire the old fallback,
+regenerate the Manifest, and update both generated README version tables.
+Get explicit owner approval for changes outside that rotation, including
+changes to the virtual package, packaging policy (sources, dependencies, USE,
+keywords or retention), automation, required checks, or GitHub settings.
+
 ## Build, Test, and Development Commands
 
-There is no standalone build step: Portage builds the package from its ebuild.
+Portage builds Noctalia from its ebuild. From the repository root, run the
+unit tests with Python 3 and Git on `PATH`. The other commands require Gentoo
+with the overlay configured.
 
 ```bash
 python3 -m unittest discover -s tests
@@ -54,7 +71,12 @@ Tests use Python's `unittest` and need no network access. Add focused methods
 named `test_<behavior>` for each branch changed in discovery, policy, or
 preparation—for example, stable-tag validation, rotation, and duplicate-PR
 handling. For package updates, also manually test the installed Noctalia
-session before merging the release PR.
+session before merging the release PR. The owner reviews the exact PR head and
+target `main`, the ebuild and Manifest diff, upstream provenance and changes,
+the linked run and Prepare attempt, the validated base and readiness summary,
+and `Python unit tests` on the candidate. See the
+[owner acceptance checklist](docs/CI_AND_SECURITY.en.md#owner-acceptance)
+for the resolver, installation, and runtime evidence required before manual merge.
 
 ## Commit & Pull Request Guidelines
 
@@ -67,7 +89,8 @@ change makes them useful.
 
 ## Security & Automation
 
-Do not commit tokens or local Portage configuration. The release watcher reads
-`GH_TOKEN` and `GITHUB_REPOSITORY` from its environment; use the GitHub Actions
-token for workflow runs and avoid printing either value. The workflow prepares
-a Draft PR but must not merge it or install Noctalia automatically.
+Keep tokens and local Portage configuration out of Git. Discover may use the
+built-in token with read permissions. Repository write permissions are confined
+to Publish in the trusted default-branch workflow. Publish may create an absent
+candidate branch and open a Draft PR against `main`. Existing branches or
+conflicting PRs stop publication. Recovery and merge are manual owner actions.
