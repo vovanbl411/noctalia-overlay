@@ -458,3 +458,41 @@ class WatchNoctaliaReleaseTests(unittest.TestCase):
         self.assertEqual(result.outcome, "already-reported")
         self.assertEqual(client.queried_titles, ["[release-bump] Noctalia v5.1.1"])
         self.assertEqual(client.queried_branches, ["automation/noctalia-v5.1.1"])
+
+
+class GitHubPullRequestLookupTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = WATCHER.GitHubClient("test-token", "owner/repository")
+        self.title = "[release-bump] Noctalia v5.2.0"
+        self.branch = "automation/noctalia-v5.2.0"
+
+    def test_complete_empty_search_requires_exact_open_head_lookup(self) -> None:
+        search = {"total_count": 0, "incomplete_results": False, "items": []}
+        with patch.object(self.client, "_request_payload", side_effect=[search, []]) as request:
+            self.assertFalse(self.client.pull_request_exists(self.title, self.branch))
+        self.assertEqual(request.call_args.kwargs["query"]["head"], f"owner:{self.branch}")
+        self.assertEqual(request.call_args.kwargs["query"]["state"], "open")
+
+    def test_incomplete_or_malformed_search_is_not_a_definitive_result(self) -> None:
+        valid = {"total_count": 0, "incomplete_results": False, "items": []}
+        for payload in (
+            {},
+            {**valid, "incomplete_results": True},
+            {**valid, "incomplete_results": "false"},
+            {**valid, "total_count": False},
+            {**valid, "total_count": -1},
+            {**valid, "total_count": 1},
+            {**valid, "items": [{}]},
+        ):
+            with self.subTest(payload=payload):
+                with patch.object(self.client, "_request_payload", return_value=payload) as request:
+                    with self.assertRaisesRegex(WATCHER.WatcherError, "incomplete or malformed"):
+                        self.client.pull_request_exists(self.title, self.branch)
+                request.assert_called_once()
+
+    def test_malformed_exact_head_read_is_inconclusive(self) -> None:
+        for result in ([{}], [None], [None] * 100):
+            with self.subTest(result=result[:1], count=len(result)):
+                with patch.object(self.client, "_request_payload", return_value=result):
+                    with self.assertRaisesRegex(WATCHER.WatcherError, "exact-head.*inconclusive"):
+                        self.client.pull_requests_for_head(self.branch)

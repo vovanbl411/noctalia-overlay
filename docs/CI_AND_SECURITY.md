@@ -4,95 +4,134 @@
 
 ## Модель CI
 
-В репозитории есть два независимых workflow.
+### CI с правами чтения
 
-### Read-only CI
+[CI](../.github/workflows/ci.yml) запускается на `push` и `pull_request` с
+`contents: read`. Задание и обязательная проверка называются
+`Python unit tests`. Имя проверки должно совпадать в workflow и ruleset.
+Задание выполняет код из PR, поэтому использует токен только для чтения
+и не получает секреты репозитория.
 
-Файл: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
+Тот же набор можно запустить из корня рабочей копии оверлея с Python 3 и Git
+в `PATH`. Тесты лежат в `tests/` и работают без сети, Portage и сторонних
+библиотек Python.
 
-Он запускается на `push` и `pull_request`, выполняет Python unit tests и имеет
-только:
-
-```yaml
-permissions:
-  contents: read
+```bash
+python3 -m unittest discover -s tests
 ```
 
-Имя required status check — `Python unit tests`. Это имя job, а не workflow
-`CI`; его не следует переименовывать без изменения ruleset. CI не получает
-secrets, не создаёт branches или Pull Requests и не отправляет commits. Код из
-pull request может выполняться тестами, поэтому write-capable token здесь не
-допустим.
+Когда workflow создаёт или обновляет PR через `GITHUB_TOKEN`, запуски
+`pull_request` для `opened`, `synchronize` и `reopened` ждут одобрения.
+Пользователь с правом записи выбирает **Approve workflows to run** в PR.
+Перед слиянием убедитесь, что обязательная проверка прошла для кандидата.
+[Документация GitHub о событиях workflow](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)
 
 ### Подготовка и публикация релиза
 
-Файл:
-[`.github/workflows/noctalia-release-watcher.yml`](../.github/workflows/noctalia-release-watcher.yml).
+[Prepare Noctalia release](../.github/workflows/noctalia-release-watcher.yml)
+запускается в 06:17 UTC по `schedule` и вручную через `workflow_dispatch`.
+Группа `noctalia-release-preparation` допускает один активный запуск
+и не отменяет уже выполняющийся запуск (`cancel-in-progress: false`).
 
-Workflow запускается по `schedule` и вручную через `workflow_dispatch`. На
-уровне workflow задано `permissions: {}`. Полномочия выдаются только jobs, где
-они нужны:
+| Стадия | Задание или действие владельца |
+| --- | --- |
+| Discover | В `prepare` скрипт [`watch_noctalia_release.py`](../scripts/watch_noctalia_release.py) проверяет стабильный релиз, тег, `VERSION`, политику упаковки и конфликты PR. Неполный или некорректный ответ при поиске PR завершает проверку ошибкой. |
+| Prepare | `prepare` создаёт копию доверенного checkout. [`prepare_noctalia_release.py`](../scripts/prepare_noctalia_release.py) добавляет ebuild кандидата, удаляет старый резервный и обновляет обе таблицы версий. |
+| Validate | `prepare` выполняет unit-тесты, сверяет происхождение и байты источника, создаёт и проверяет Manifest, запускает `pkgcheck scan --exit`. |
+| Handoff | [`release_handoff.py`](../scripts/release_handoff.py) упаковывает проверенные файлы в `prepare` и проверяет их в `publish`. |
+| Publish | `publish` сверяет удалённый репозиторий, актуальную базу, PR и ветку, создаёт ref кандидата и открывает Draft PR. |
+| Accept | Владелец проверяет точного кандидата и сливает PR вручную. |
+
+У workflow задано `permissions: {}`. Права выдаются отдельным заданиям.
 
 ```text
 prepare: contents: read, pull-requests: read
 publish: contents: write, pull-requests: write
 ```
 
-`prepare` выполняет discovery, проверку policy, поиск duplicate PR, расчёт
-rotation и unit tests. Он не создаёт branch и PR. `publish` начинается с fresh
-checkout `main`, получает проверенный artifact, применяет allowlisted changes,
-создаёт deterministic automation branch и открывает Draft PR.
+Discover может получить встроенный `GITHUB_TOKEN` с правами чтения задания
+через `GH_TOKEN`. Права записи в репозиторий получает только Publish.
+Шаг публикации использует токен для аутентификации Git и запроса Draft PR.
+Аутентификация Git действует в окружении команды. Оба задания watcher
+выбирают `GITHUB_SHA` и проверяют `HEAD`. Все checkout используют
+`persist-credentials: false`.
 
-```text
-upstream release
-    ↓
-prepare: discovery, policy, tests
-    ↓
-sanitized workspace → Manifest/pkgcheck
-    ↓
-minimal release-handoff artifact
-    ↓
-publish: fresh main checkout and validation
-    ↓
-automation branch → Draft Pull Request
-    ↓
-manual verification → merge
-```
+Publish проверяет репозиторий `vovanbl411/noctalia-overlay`, ref запуска
+`refs/heads/main` и точный ref workflow
+`vovanbl411/noctalia-overlay/.github/workflows/noctalia-release-watcher.yml@refs/heads/main`.
+Допускаются события `schedule` и `workflow_dispatch` при успешном Prepare,
+полной записи готовности и выключенном dry-run. Скрипт проверяет контекст
+с учётом регистра и требует совпадения SHA запуска, `HEAD` и базы handoff.
 
-Release PR всегда Draft. Workflow никогда не выполняет auto-merge. Candidate
-нужно вручную установить из ветки PR и проверить в обычной Niri-сессии.
+При `up-to-date` и `already-reported` workflow пропускает проверку источника,
+шаги Gentoo и загрузку артефакта. Уже принятая в `main` версия означает
+обычное отсутствие обновления. При `dry_run=true` workflow ищет релиз,
+проверяет политику, запускает unit-тесты и, если применимо, строит план
+ротации. Он сообщает план и пропускает проверку архива, шаги Gentoo,
+загрузку артефакта и удалённую запись.
 
-Для `up-to-date` и `already-reported` Gentoo container не запускается, images
-не скачиваются и artifact не создаётся. `dry_run=true` выполняет discovery,
-policy, расчёт будущей rotation, tests и summary, но не запускает container,
-не создаёт artifact, branch или PR.
+## Доверие к upstream Noctalia
 
-## Изоляция Gentoo container
+GitHub Release служит сигналом о выходе стабильного релиза. Watcher принимает
+публичный релиз с тегом `vX.Y.Z` и ожидаемым URL `noctalia-dev/noctalia`.
+Черновики и prerelease отклоняются. Lightweight tag указывает прямо на
+коммит. Annotated tag должен через объект тега указывать на коммит с полным
+SHA из 40 строчных шестнадцатеричных символов.
 
-`prepare` создаёт `$RUNNER_TEMP/noctalia-overlay` стандартной библиотекой
-Python, копируя checkout без `.git` и без ссылок. Перед запуском container
-явно проверяется отсутствие `.git`.
+До проверки политики упаковки watcher читает `VERSION` через GitHub
+Contents API по точному SHA этого коммита. Содержимое файла в UTF-8 должно
+совпадать с версией релиза. Перед сравнением upstream-файлов `PACKAGING.md`,
+`meson.build` и `meson_options.txt` по коммитам та же проверка выполняется
+для тега уже упакованной версии.
 
-Container получает RW-монтирование только этой sanitized-копии, чтобы
-сгенерировать Manifest. Он не получает `$GITHUB_WORKSPACE`, `GH_TOKEN`,
-repository credentials или GitHub secrets. В нём выполняются:
+Для annotated tag watcher записывает сведения GitHub о подписи.
+`verified: true` требует `reason: valid`, корректного формата OpenPGP armored
+signature и совпадающих заголовков `object`, `type commit` и `tag` в
+подписанных данных. Противоречивые ответы отклоняются. Допускается
+непротиворечивый ответ `verified: false`, его причина сохраняется. Для
+lightweight tag проверка подписи имеет статус `not applicable`. При ревью
+PR владелец читает примечания к релизу и разбирает необычные сведения
+о происхождении или подписанте.
+
+## Изоляция контейнера Gentoo
+
+Для подходящего кандидата Prepare загружает используемый в ebuild архив тега
+`https://github.com/noctalia-dev/noctalia/archive/vX.Y.Z.tar.gz` по HTTPS
+с проверкой сертификата. В новом DISTDIR архив сохраняется как
+`noctalia-X.Y.Z.tar.gz`. Проверка читает весь поток gzip и разбирает tar до
+маркера конца архива. Git tar commit ID и комментарий PAX сверяются с upstream
+коммитом, найденным на Discover. Отсутствующие, некорректные или несовпадающие
+метаданные останавливают проверку. Связь коммита с содержимым архива
+устанавливается доверием к аутентифицированному сервису канонических архивов
+GitHub. Идентификатор коммита в tar служит метаданными и сам по себе не даёт
+криптографического доказательства соответствия полному upstream Git tree.
+
+Prepare создаёт копию в `$RUNNER_TEMP/noctalia-overlay` без `.git` и ссылок
+и проверяет отсутствие `.git`. В контейнер Gentoo, закреплённый по digest,
+копия монтируется с правом записи, а изолированный DISTDIR монтируется
+в `/distfiles` только для чтения. Исходный `$GITHUB_WORKSPACE`, токены и
+секреты GitHub в контейнер не передаются. Проверки запускаются в `/overlay`.
 
 ```bash
-ebuild "/overlay/gui-apps/noctalia/noctalia-X.Y.Z.ebuild" manifest
+DISTDIR=/distfiles ebuild "/overlay/gui-apps/noctalia/noctalia-X.Y.Z.ebuild" manifest
 emerge --oneshot dev-util/pkgcheck
 pkgcheck scan --exit
 ```
 
-Если Manifest generation или `pkgcheck` завершается ошибкой, `publish` не
-запускается.
+После завершения контейнера Prepare снова проверяет distfile. Размер, BLAKE2B
+и SHA512 записи DIST кандидата должны совпасть с проверенным архивом. Запись
+DIST сохранённой резервной версии должна совпасть с записью в доверенной базе.
+Генерация и сверка Manifest подтверждают метаданные distfile и их связь
+с проверенными байтами. `pkgcheck` проверяет метаданные и политику оверлея
+в этом окружении Gentoo. Проверка зависимостей, полная сборка Noctalia из
+исходников, установка и тесты сеанса в эти автоматические проверки не входят.
 
-## Artifact между jobs
+## Артефакт между заданиями
 
-Для handoff используются только официальные
-`actions/upload-artifact` и `actions/download-artifact`, закреплённые полным
-commit SHA. Artifact хранится около 30 дней.
-
-Он содержит только:
+Официальные `actions/upload-artifact` и `actions/download-artifact` закреплены
+на полные SHA коммитов.
+Prepare загружает `release-handoff-<run_id>-<run_attempt>` со сроком хранения
+30 дней. В архив входят только следующие файлы:
 
 ```text
 release-handoff/
@@ -103,33 +142,119 @@ release-handoff/
   gui-apps/noctalia/noctalia-X.Y.Z.ebuild
 ```
 
-`release.json` содержит schema version, base commit, stable release tag,
-candidate/fallback/removed versions, deterministic branch и PR title, URL
-релиза, metadata изменений packaging files и provenance metadata: тип tag,
-optional tag object SHA, target commit SHA, статус и причину verification, а
-также `verified_at`, если GitHub его сообщил. Пути не передаются как данные: они
-строятся из уже проверенных версий.
+В `release.json` используется схема v2. Она хранит SHA базы, тег и URL релиза,
+версии кандидата, сохранённого и удалённого ebuild, вычисляемые имя ветки и
+заголовок PR, изменения файлов упаковки upstream и происхождение тега. Пути
+строятся из проверенных версий.
 
-`publish` считает artifact недоверенным input. Перед применением он проверяет
-точный список файлов и директорий, regular-file type, отсутствие symlinks и
-special files, размер файлов, JSON schema, версии, URL, branch, PR title и
-provenance. Неожиданное поле, файл, ссылка или несоответствие версий завершают
-job.
+Запись готовности связывает ID и попытку успешного Prepare с точными ID
+и SHA-256 загруженного артефакта, проверенной базой, источником, кандидатом
+и результатами обязательных проверок. Publish сверяет текущий запуск
+и попытку, скачивает артефакт по этому ID и проверяет SHA-256 ZIP до
+распаковки. Повтор отдельного задания Publish с другой попыткой Prepare
+завершается ошибкой. Если прошлый Prepare не может дать запись готовности
+текущей попытке, повторите весь workflow. Если запись на GitHub могла уже
+произойти, сначала проверьте удалённое состояние.
 
-Затем `publish` сравнивает base commit с fresh checkout `main`, применяет
-только `README.md`, `README.en.md`, `Manifest` и candidate ebuild, удаляет только ebuild,
-построенный из validated removed version, повторно проверяет overlay policy,
-выполняет `git diff --check` и сверяет точный allowlist diff. Поэтому artifact
-не может изменить `.github/`, `scripts/`, `tests/`, `metadata/`, `profiles/`,
-`AGENTS.md`, `.git/` или другой путь.
+До создания коммита Publish проверяет состав, пути, допустимый размер и тип
+файлов, схему, происхождение и ротацию. Он сверяет Manifest с данными о
+проверенном источнике и базой, ebuild кандидата с сохранённым ebuild-шаблоном,
+а оба README с результатом генерации таблиц. В индекс должны попасть
+добавление ebuild кандидата, удаление прежнего резервного ebuild и изменение
+только Manifest и двух README. Проверяются байты и режимы файлов в индексе,
+пробельные ошибки, а также дерево и родитель коммита.
 
-Token нужен только в `publish` для push deterministic branch и POST Draft PR.
-Checkout использует `persist-credentials: false`; authenticated remote URL
-восстанавливается сразу после push и не остаётся в `.git/config`.
+В Draft PR указаны ссылка на точный запуск workflow, попытка Prepare и SHA
+проверенной базы. В итоговом отчёте Prepare этой попытки раздел **Release
+readiness** содержит полный JSON готовности. Отчёт и логи шагов показывают
+отдельные результаты проверки архива, генерации и сверки Manifest и
+`pkgcheck`. Сверяйте результаты именно для рассматриваемого кандидата.
+`passed`, `failed`, `skipped`, `not run`, `not applicable` и `unknown`
+обозначают разные исходы. Успешное задание с пропущенным шагом не
+подтверждает прохождение этого шага.
+
+В [проверенном запуске по расписанию 45663950280](https://github.com/vovanbl411/noctalia-overlay/actions/runs/45663950280)
+на `cee4a4fb99cf08a39df1d8aa6613d8a8cf397b2c` задание Prepare завершилось
+успешно. По данным GitHub jobs API, задание Publish и каждый из
+перечисленных ниже шагов Prepare получили статус `SKIPPED`.
+
+- `Create sanitized overlay workspace`
+- `Prepare the release rotation`
+- `Generate Manifest and run pkgcheck`
+- `Create release handoff`
+- `Upload release handoff`
+- `Mark release handoff ready`
+
+Этот запуск не подтверждает проверку кандидата по реализации, прошедшей
+техническое ревью.
+
+## Публикация и восстановление
+
+Publish работает только с `vovanbl411/noctalia-overlay`. Ветка кандидата
+имеет имя `automation/noctalia-vX.Y.Z`, целевая ветка PR — `main`. После
+локальной проверки Publish ищет конфликты PR и ветки и сверяет удалённый
+`main` с проверенной базой непосредственно перед первым push. Lease для
+push требует отсутствия ref. Draft PR допускается после подтверждённого
+создания нового ref. Перед запросом PR Publish повторяет проверку конфликтов,
+сверяет удалённый `main` и head кандидата. Git и GitHub API выполняют отдельные
+операции, поэтому состояние между проверками и записью может измениться.
+
+| Ситуация | Результат |
+| --- | --- |
+| Ветка кандидата уже существует, даже на том же коммите | Публикация останавливается. Автоматизация не перезаписывает и не переиспользует ветку. |
+| Конфликтующий открытый PR или ранее закрытый PR с точной веткой кандидата | Публикация останавливается. Владелец проверяет историю PR. Неоднозначный результат поиска тоже останавливает публикацию. |
+| Удалённый `main` отличается от базы handoff | Публикация останавливается до следующей записи. Для автоматической публикации нужно подготовить кандидата на актуальном `main`. |
+| Ветку создал другой участник во время push | Lease на отсутствие ref блокирует замену. Ответ up-to-date не подтверждает создание, запрос PR не отправляется. |
+| Push завершился ошибкой или результат неоднозначен | Publish завершается ошибкой без запроса PR. Проверки чтением показывают наблюдаемое состояние ref и PR с точной веткой кандидата. Создание ветки этим запуском не подтверждено. |
+| Push подтверждён, затем запрос PR завершился ошибкой или ответ неоднозначен | В отчёте остаются подтверждённые ref и коммит, а также доступные сведения о ветке и PR после повторного чтения. |
+| Head кандидата изменился до запроса PR | Publish останавливается до запроса и отдельно сообщает подтверждённую запись и наблюдаемое удалённое состояние. |
+
+Перед повторным запуском прочитайте отчёт и логи Publish. Ref, найденный
+при повторном чтении, показывает, куда ветка указывала на момент проверки.
+Запись о подтверждённом создании ветки основана на результате push.
+Проверка может подтвердить открытый или закрытый PR с точной веткой
+кандидата, не найти такого PR или оставить результат `UNKNOWN`. Пустой ответ
+после неоднозначного запроса PR оставляет его исход неизвестным.
+
+Восстановление выполняет владелец вручную. Сверьте принадлежность ветки,
+точный коммит кандидата, его родителя и дерево с проверенной базой и diff
+handoff. Проверьте текущий удалённый `main` и всю историю PR с этой веткой.
+Если подходящий PR уже существует, сначала проверьте его. Открывайте Draft PR
+вручную только для проверенной ветки с актуальной базой после разрешения
+конфликтов. Если отказываетесь от кандидата, удаляйте только подтверждённую
+осиротевшую ветку, которая вам принадлежит. Конфликт с ранее закрытым PR
+решается отдельно. Удаление ветки сохраняет историю PR. Автоматизация
+не повторяет запись и не удаляет, не перезаписывает и не переиспользует ветку.
+
+## Приёмка владельцем
+
+1. Сверьте точный SHA head PR и целевую ветку `main`. Сопоставьте родителя
+   коммита и изменения ebuild, Manifest и README с проверенной базой и кандидатом.
+2. Просмотрите примечания к upstream-релизу, его происхождение, личность
+   подписанта при необычных признаках, изменения упаковки и зависимостей.
+3. Откройте запуск по ссылке из PR и найдите указанную попытку Prepare.
+   Сверьте SHA базы, запись готовности, результаты применимых проверок
+   и обязательной проверки `Python unit tests` для кандидата.
+4. Выполните `doas emerge -pv gui-apps/noctalia`, чтобы проверить зависимости
+   и выбор оверлея. Установите точного кандидата из ветки PR. Запишите
+   проверенную версию, head PR, профиль, архитектуру, USE и способ установки.
+   Установка из binpkg подтверждает установку бинарной сборки. Полную сборку
+   подтверждает зафиксированная сборка из исходников в проверенной конфигурации.
+5. Проверьте обычную сессию Niri, включая панель, уведомления, сеть, звук
+   и блокировку экрана. Запишите результаты для этого кандидата и слейте PR
+   вручную после прохождения применимых проверок.
 
 ## Ruleset для `main`
 
-Настраивается вручную: `Settings → Rules → Rulesets`.
+На 2026-11-25 UTC публичный [ruleset Protect main](https://github.com/vovanbl411/noctalia-overlay/rules/23505842)
+был активен для ветки по умолчанию. [Публичные правила для `main`](https://api.github.com/repos/vovanbl411/noctalia-overlay/rules/branches/main)
+показывали, что этот ruleset требует PR, разрешения обсуждений ревью и
+прохождения проверки GitHub Actions `Python unit tests` (ID интеграции `15368`)
+на ветке, обновлённой до актуальной базы. Ruleset запрещал удаление и force
+push. Число обязательных одобрений — ноль. Публичные сведения не подтверждают
+действующие права обхода правил и legacy branch protection.
+
+Ожидаемая конфигурация в `Settings → Rules → Rulesets` приведена ниже.
 
 ```text
 Ruleset: Protect main
@@ -154,14 +279,14 @@ Require linear history: OFF
 Merge queue: OFF
 ```
 
-`Required approvals: 0` выбран намеренно для персонального repository.
-Защиту обеспечивает связка PR, обязательного CI и ручного решения владельца;
-второй reviewer не обязателен. `Restrict updates` остаётся выключенным: при
-пустом bypass list он может запретить нормальный merge Pull Request.
+`Required approvals: 0` выбран для персонального репозитория. Защиту
+обеспечивают PR, обязательный CI и ручное решение владельца. Этот ruleset
+не требует второго ревьюера. Если включить `Restrict updates` с пустым
+списком обхода, обычное слияние PR может стать недоступно.
 
 ## Настройки GitHub Actions
 
-Настраиваются вручную: `Settings → Actions → General`.
+Ожидаемые настройки находятся в `Settings → Actions → General`.
 
 ```text
 Actions permissions:
@@ -179,18 +304,28 @@ Require approval for all external contributors: ON
 Artifact and log retention: about 30 days
 ```
 
-Allowlist `actions/...@*` не разрешает использовать mutable tags в workflow.
-Отдельная repository policy требует full-length immutable SHA; каждый
-внешний Action в YAML должен быть закреплён именно так. Разрешение создавать
-Pull Requests нужно только `publish` для Draft PR, а default permissions
-остаются read-only.
+Allowlist `actions/...@*` действует отдельно от закрепления по SHA. В файлах
+workflow каждый внешний Action закреплён. Разрешение Actions создавать PR
+позволяет Publish запросить Draft PR. Разрешение на создание PR и одобрение
+запуска его CI действуют отдельно.
+
+Владельцу ещё нужно подтвердить действующие настройки репозитория и
+унаследованные ограничения. Проверьте rulesets организации и репозитория,
+legacy branch protection, дополнительные обязательные проверки, права
+обхода и слияния, доступность Actions, allowlist, закрепление по SHA и права
+токена по умолчанию. Подтвердите в GitHub разрешение на создание PR, правила
+одобрения и сроки хранения. На разрешённом запуске с кандидатом проверьте
+создание Draft PR, одобрение запуска CI для PR автоматизации, точный
+обязательный check на его head и запрет слияния, если check отсутствует
+или завершился ошибкой. Workflow запрашивает права в YAML. Действующие
+права и ограничения определяются настройками GitHub.
 
 ## Supply chain и secrets
 
 - GitHub Actions закреплены на полный commit SHA.
 - Gentoo Docker images закреплены на SHA256 digest; digests обновляются вручную.
-- Dependabot обновляет только GitHub Actions; его PR проходят review и CI,
-  auto-merge не используется.
+- Dependabot обновляет только GitHub Actions. Его PR проходят ревью и CI,
+  слияние выполняется вручную.
 - Не используются `latest`, `@main` и mutable action tags для
   security-sensitive CI dependencies.
 - PAT и SSH private keys не хранятся в repository. Release automation
@@ -199,30 +334,3 @@ Pull Requests нужно только `publish` для Draft PR, а default perm
 
 GitHub Secret Scanning и Push Protection рекомендуется включить вручную.
 Их фактическое состояние нельзя определить из содержимого Git repository.
-
-## Доверие к upstream Noctalia
-
-GitHub Release — первичный сигнал публикации stable-релиза. Automation
-принимает только public, non-prerelease release с тегом `vX.Y.Z` и ожидаемым
-URL `noctalia-dev/noctalia`. Tag должен разрешаться в full 40-character
-lowercase commit SHA: lightweight tag может указывать прямо на commit,
-annotated tag должен указывать на commit через tag object.
-
-До проверки overlay policy automation читает `VERSION` через GitHub Contents
-API с `ref`, равным exact target commit SHA. Файл должен быть UTF-8 и содержать
-ровно версию release. Отсутствующий, некорректный или несовпадающий `VERSION`
-завершает run ошибкой. Перед packaging diff та же проверка выполняется для
-точного commit текущего packaged tag. Файлы `PACKAGING.md`, `meson.build` и
-`meson_options.txt` сравниваются по этим commit SHA, а не по mutable tag names.
-
-Подпись tag — дополнительная provenance metadata, а не acceptance gate. Для
-annotated tag automation сохраняет ответ GitHub. Если GitHub сообщает
-`verified: true`, обязательны `reason: valid`, корректная OpenPGP armored
-signature и signed payload с соответствующими `object`, `type commit` и `tag`
-headers. Противоречивые verified responses отклоняются. Ответ `verified: false`
-сам по себе не блокирует stable release; его reason сохраняется, и подпись не
-представляется проверенной. Для lightweight tag signature verification имеет
-значение `not applicable`. Summary и Draft PR показывают фактическую provenance.
-
-Manual review release notes и upstream provenance/signing identity остаётся
-частью проверки Draft PR, когда это применимо.

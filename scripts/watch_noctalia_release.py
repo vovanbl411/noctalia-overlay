@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import http.client
 import json
 import os
 import re
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 SCRIPT_DIRECTORY = str(Path(__file__).parent)
 if SCRIPT_DIRECTORY not in sys.path:
@@ -101,8 +102,15 @@ class ReleaseClient(Protocol):
     def upstream_file_content(self, path: str, ref: str) -> str | None: ...
 
 
+class NoRedirect(HTTPRedirectHandler):
+    """Keep authenticated API requests on their exact endpoint."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 class GitHubClient:
-    """Small GitHub REST client for release discovery only."""
+    """Small GitHub REST client for release discovery and Draft PR publication."""
 
     def __init__(self, token: str, repository: str) -> None:
         self._token = token
@@ -117,18 +125,84 @@ class GitHubClient:
             f"{SEARCH_API_URL}?{urlencode({'q': query, 'per_page': 1})}"
         )
         total_count = payload.get("total_count")
-        if not isinstance(total_count, int):
-            raise WatcherError(
-                "GitHub API returned an invalid pull request search response."
+        items = payload.get("items")
+        if (
+            payload.get("incomplete_results") is not False
+            or type(total_count) is not int
+            or total_count < 0
+            or not isinstance(items, list)
+            or len(items) != min(total_count, 1)
+            or any(
+                not isinstance(item, dict)
+                or item.get("state") != "open"
+                or not isinstance(item.get("pull_request"), dict)
+                for item in items
             )
-        if total_count > 0:
-            return True
+        ):
+            raise WatcherError("GitHub pull request search response is incomplete or malformed.")
+        return total_count > 0 or bool(self.pull_requests_for_head(branch, state="open"))
+
+    def pull_requests_for_head(self, branch: str, *, state: str = "all") -> list[dict]:
+        """Check an exact same-repository head, including closed PRs when requested."""
         owner = self._repository.split("/", maxsplit=1)[0]
-        pull_requests = self._request_list(
+        pulls = self._request_list(
             PULLS_API_URL.format(repository=self._repository),
-            query={"state": "open", "head": f"{owner}:{branch}", "per_page": "1"},
+            query={"state": state, "head": f"{owner}:{branch}", "per_page": "100"},
         )
-        return bool(pull_requests)
+        # A full page is inconclusive. The caller must not infer absence from it
+        # or use it to confirm the outcome of a write.
+        if len(pulls) >= 100 or any(
+            not self._valid_pull_request(pull, branch)
+            or (state == "open" and pull["state"] != "open")
+            for pull in pulls
+        ):
+            raise WatcherError("GitHub exact-head pull request response is inconclusive.")
+        return pulls
+
+    def _valid_pull_request(self, pull: object, branch: str) -> bool:
+        if not isinstance(pull, dict):
+            return False
+        head, base = pull.get("head"), pull.get("base")
+        number = pull.get("number")
+        if (
+            type(number) is not int
+            or number <= 0
+            or pull.get("html_url") != f"https://github.com/{self._repository}/pull/{number}"
+            or pull.get("state") not in ("open", "closed")
+            or type(pull.get("draft")) is not bool
+        ):
+            return False
+        for side in (head, base):
+            if not isinstance(side, dict) or not isinstance(side.get("repo"), dict):
+                return False
+            if side["repo"].get("full_name") != self._repository:
+                return False
+        return (
+            head.get("ref") == branch
+            and isinstance(head.get("sha"), str)
+            and GIT_SHA_PATTERN.fullmatch(head["sha"]) is not None
+            and isinstance(base.get("ref"), str)
+            and bool(base["ref"])
+        )
+
+    def create_draft(
+        self, title: str, branch: str, body: str, commit: str, base: str
+    ) -> str:
+        payload = self._request_json(
+            PULLS_API_URL.format(repository=self._repository),
+            data={"title": title, "body": body, "head": branch, "base": "main", "draft": True},
+        )
+        if (
+            not self._valid_pull_request(payload, branch)
+            or payload["state"] != "open"
+            or payload["draft"] is not True
+            or payload.get("title") != title
+            or payload["base"]["ref"] != "main"
+            or payload["base"].get("sha") != base
+            or payload["head"]["sha"] != commit
+        ):
+            raise WatcherError("GitHub returned an ambiguous Draft PR creation response.")
+        return payload["html_url"]
 
     def tag_ref(self, tag: str) -> dict[str, Any]:
         return self._request_json(
@@ -189,11 +263,12 @@ class GitHubClient:
         *,
         query: dict[str, str] | None = None,
         allow_not_found: bool = False,
+        data: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         payload = self._request_payload(
-            url, query=query, allow_not_found=allow_not_found
+            url, query=query, allow_not_found=allow_not_found, data=data
         )
-        if payload is None:
+        if payload is None and allow_not_found:
             return None
         if not isinstance(payload, dict):
             raise WatcherError("GitHub API returned an invalid JSON object.")
@@ -211,12 +286,15 @@ class GitHubClient:
         *,
         query: dict[str, str] | None = None,
         allow_not_found: bool = False,
+        data: dict[str, Any] | None = None,
     ) -> Any | None:
         if query is not None:
             url = f"{url}?{urlencode(query)}"
         request = Request(
             url,
+            data=None if data is None else json.dumps(data).encode("utf-8"),
             headers={
+                "Content-Type": "application/json",
                 "Accept": "application/vnd.github+json",
                 "Authorization": f"Bearer {self._token}",
                 "User-Agent": "noctalia-overlay-release-watcher",
@@ -224,8 +302,10 @@ class GitHubClient:
             },
         )
         try:
-            with urlopen(request, timeout=20) as response:  # noqa: S310
-                payload = json.load(response)
+            with build_opener(NoRedirect()).open(request, timeout=20) as response:
+                if response.status != (201 if data is not None else 200):
+                    raise WatcherError("GitHub API returned an unexpected HTTP status.")
+                payload = json.load(response, object_pairs_hook=_unique_json_object)
         except HTTPError as error:
             if allow_not_found and error.code == 404:
                 return None
@@ -233,8 +313,17 @@ class GitHubClient:
                 f"GitHub API request failed with HTTP {error.code}."
             ) from error
         except URLError as error:
-            raise WatcherError(f"GitHub API request failed: {error.reason}.") from error
+            raise WatcherError("GitHub API transport failed.") from error
+        except (OSError, ValueError, http.client.HTTPException) as error:
+            raise WatcherError("GitHub API returned an unreadable response.") from error
         return payload
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload = dict(pairs)
+    if len(payload) != len(pairs):
+        raise WatcherError("GitHub API returned a duplicate JSON field.")
+    return payload
 
 
 def parse_stable_release(payload: dict[str, Any]) -> Release:
@@ -436,7 +525,7 @@ def draft_pull_request_title(release: Release) -> str:
 
 
 def draft_pull_request_branch(release: Release) -> str:
-    """Return the deterministic branch used to resume a previously failed run."""
+    """Return the deterministic branch used to identify release conflicts."""
     return f"automation/noctalia-{release.tag}"
 
 
