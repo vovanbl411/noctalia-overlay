@@ -617,8 +617,40 @@ class PublicationTests(IsolatedGitTests):
         self.assertEqual(self.pr_requests[0]["head"], self.branch)
         self.assertEqual(self.pr_requests[0]["base"], "main")
         self.assertIs(self.pr_requests[0]["draft"], True)
-        self.assertIn("Full source build and runtime checks: not run", self.pr_requests[0]["body"])
+        body = self.pr_requests[0]["body"]
+        self.assertIn("https://github.com/vovanbl411/noctalia-overlay/actions/runs/124", body)
+        self.assertIn("Prepare attempt: `2`", body)
+        self.assertIn(f"Validated base SHA: `{self.base}`", body)
+        self.assertIn(f"BLAKE2B: `{'1' * 128}`", body)
+        self.assertIn(f"Target commit: `{'c' * 40}`", body)
+        self.assertIn("- [ ] Test network integration, audio, and the lock screen.", body)
+        self.assertIn("Full source build and runtime checks: not run", body)
         self.assertIn("Draft PR confirmed", self.summary.read_text())
+
+    def test_prepare_summary_records_complete_validated_readiness(self) -> None:
+        output = self.root / "github-output"
+        subprocess.run(
+            [
+                sys.executable, str(SCRIPT_PATH), "ready",
+                "--handoff-root", str(self.artifact), "--evidence", str(self.evidence),
+            ],
+            env={
+                **os.environ,
+                **self.env,
+                "GITHUB_OUTPUT": str(output),
+                "GITHUB_STEP_SUMMARY": str(self.summary),
+                "GH_TOKEN": "test-credential-value",
+                "UNRELATED_SETTING": "test-unrelated-value",
+            },
+            check=True,
+            capture_output=True,
+        )
+        summary = self.summary.read_text()
+        evidence_json = summary.split("```json\n", 1)[1].split("\n```", 1)[0]
+        self.assertEqual(json.loads(evidence_json), self.ready)
+        self.assertEqual(json.loads(output.read_text().removeprefix("readiness=")), self.ready)
+        self.assertNotIn("test-credential-value", summary)
+        self.assertNotIn("test-unrelated-value", summary)
 
     def test_context_is_case_sensitive_and_blocks_untrusted_runs(self) -> None:
         for key, value in (
@@ -815,12 +847,25 @@ class PublicationTests(IsolatedGitTests):
         self.assertEqual(self.remote_head(), self.head())
         self.assert_no_writes()
 
+    def assert_unconfirmed_push_report(self, observed_head: str) -> str:
+        self.assertEqual(self.pr_requests, [])
+        self.assertEqual(sum(args[0] == "push" for args in self.git_calls), 1)
+        summary = self.summary.read_text()
+        self.assertIn("Candidate branch push failed or was inconclusive", summary)
+        self.assertIn("Branch creation by this run: unconfirmed.", summary)
+        self.assertIn(f"Remote branch at read-back: {self.candidate_ref} at {observed_head}", summary)
+        self.assertIn("Draft PR request: not run.", summary)
+        self.assertIn("Owner recovery", summary)
+        self.assertNotIn("Last confirmed write: created branch", summary)
+        return summary
+
     def test_concurrent_branch_creation_is_rejected_by_real_lease(self) -> None:
         self.before_push = lambda: self.set_remote_ref(self.candidate_ref, self.base)
         with self.assertRaisesRegex(HANDOFF.HandoffError, "Git push failed"):
             self.publish()
         self.assertEqual(self.remote_head(), self.base)
-        self.assertEqual(self.pr_requests, [])
+        summary = self.assert_unconfirmed_push_report(self.base)
+        self.assertIn("Exact-head PR state: none observed at read-back", summary)
 
     def test_real_up_to_date_push_does_not_authorize_pr(self) -> None:
         self.before_push = lambda: subprocess.run(
@@ -830,7 +875,26 @@ class PublicationTests(IsolatedGitTests):
         with self.assertRaisesRegex(HANDOFF.HandoffError, "did not confirm creation"):
             self.publish()
         self.assertEqual(self.remote_head(), self.head())
-        self.assertEqual(self.pr_requests, [])
+        summary = self.assert_unconfirmed_push_report(self.head())
+        self.assertIn("Exact-head PR state: none observed at read-back", summary)
+
+    def test_failed_push_reads_back_created_branch_without_authorizing_pr(self) -> None:
+        git = HANDOFF.git
+
+        def lose_push_confirmation(root, *args, **kwargs):
+            output = git(root, *args, **kwargs)
+            if args[0] == "push":
+                self.pull_requests.append(self.pr(state="closed"))
+                raise HANDOFF.HandoffError("Git push failed after remote accepted the ref.")
+            return output
+
+        with patch.object(HANDOFF, "git", side_effect=lose_push_confirmation):
+            with self.assertRaisesRegex(HANDOFF.HandoffError, "Git push failed after remote accepted"):
+                self.publish()
+        self.assertEqual(self.remote_head(), self.head())
+        summary = self.assert_unconfirmed_push_report(self.head())
+        self.assertIn("Exact-head PR state: confirmed closed", summary)
+        self.assertIn("matches candidate commit", summary)
 
     def test_main_changes_before_pr_are_reported_after_confirmed_push(self) -> None:
         def move_base():

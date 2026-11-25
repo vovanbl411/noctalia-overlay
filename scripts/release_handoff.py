@@ -542,8 +542,24 @@ def apply_handoff(
     return handoff
 
 
-def draft_pull_request_body(handoff: ReleaseHandoff, evidence: dict | None = None) -> str:
-    """Render the existing manual-review checklist from validated handoff fields."""
+def draft_pull_request_body(handoff: ReleaseHandoff, readiness: dict | None = None) -> str:
+    """Render the release evidence and manual-review checklist."""
+    evidence_lines = ()
+    if readiness is not None:
+        source = readiness["source"]
+        run_url = f"https://github.com/{REPOSITORY}/actions/runs/{readiness['run']}"
+        evidence_lines = (
+            f"- Workflow run: [{readiness['run']}]({run_url})",
+            f"- Prepare attempt: `{readiness['attempt']}`",
+            f"- Validated base SHA: `{readiness['base']}`",
+            f"- Canonical source archive: {source['url']}",
+            f"- Archive size: {source['archive']['size']} bytes",
+            f"- BLAKE2B: `{source['archive']['blake2b']}`",
+            f"- SHA512: `{source['archive']['sha512']}`",
+            "- Archive commit ID, gzip/tar integrity and both Manifest entries: passed",
+            "- Full source build and runtime checks: not run",
+            "",
+        )
     return "\n".join(
         (
             f"# Noctalia release: [{handoff.release_tag}]({handoff.release_url})",
@@ -563,18 +579,7 @@ def draft_pull_request_body(handoff: ReleaseHandoff, evidence: dict | None = Non
             "- Stable release and exact commit VERSION verified",
             "- `pkgcheck scan`",
             "",
-            *(
-                (
-                    f"- Canonical source archive: {evidence['url']}",
-                    f"- Archive size: {evidence['archive']['size']} bytes",
-                    f"- BLAKE2B: `{evidence['archive']['blake2b']}`",
-                    f"- SHA512: `{evidence['archive']['sha512']}`",
-                    "- Archive commit ID, gzip/tar integrity and both Manifest entries: passed",
-                    "- Full source build and runtime checks: not run",
-                    "",
-                )
-                if evidence is not None else ()
-            ),
+            *evidence_lines,
             "## Upstream provenance",
             "",
             f"- Tag type: {handoff.provenance.tag_type}",
@@ -1019,14 +1024,14 @@ def report_partial_publication(
     try:
         head = remote_ref(root, ref, git_env)
         branch_state = f"{ref} at {head}" if head else "confirmed absent at read-back"
-    except HandoffError:
+    except (HandoffError, OSError):
         branch_state = "UNKNOWN"
     try:
         prs = client.pull_requests_for_head(handoff.branch)
         if prs:
             pr_state = "; ".join(
                 f"confirmed {pr['state']} {pr['html_url']}"
-                + (" (matches published commit)" if pr["head"]["sha"] == commit else " (different head commit)")
+                + (" (matches candidate commit)" if pr["head"]["sha"] == commit else " (different head commit)")
                 for pr in prs
             )
         elif attempted_pr:
@@ -1039,9 +1044,9 @@ def report_partial_publication(
     append_summary(summary, f"- Exact-head PR state: {pr_state}")
     append_summary(
         summary,
-        "- Owner recovery: inspect the ref and PR history. If the branch is yours and the base "
-        "is current, recover the Draft PR manually. If abandoning the candidate, resolve any "
-        "closed-PR conflict separately and remove only a confirmed orphan you own.",
+        "- Owner recovery: verify branch ownership, the candidate commit, current base, and "
+        "PR history before recovering the Draft PR manually. Resolve any closed-PR conflict separately. "
+        "If abandoning the candidate, remove only a confirmed orphan you own.",
     )
 
 
@@ -1087,10 +1092,12 @@ def publish_candidate(
     if remote_ref(root, ref, git_env) is not None:
         raise HandoffError("Candidate branch already exists. Owner review is required.")
     verify_remote_base(root, handoff.base_commit, git_env)
-    create_remote_branch(root, ref, git_env)
-    append_summary(summary, f"- Last confirmed write: created branch `{ref}` at `{commit}`.")
+    branch_created = False
     attempted_pr = False
     try:
+        create_remote_branch(root, ref, git_env)
+        branch_created = True
+        append_summary(summary, f"- Last confirmed write: created branch `{ref}` at `{commit}`.")
         check_pr_conflicts(client, handoff)
         verify_remote_base(root, handoff.base_commit, git_env)
         if remote_ref(root, ref, git_env) != commit:
@@ -1098,9 +1105,13 @@ def publish_candidate(
         attempted_pr = True
         url = client.create_draft(
             handoff.pull_request_title, handoff.branch,
-            draft_pull_request_body(handoff, ready["source"]), commit, handoff.base_commit,
+            draft_pull_request_body(handoff, ready), commit, handoff.base_commit,
         )
-    except (HandoffError, WatcherError):
+    except (HandoffError, WatcherError, OSError) as error:
+        if not branch_created:
+            detail = f" {error}" if isinstance(error, HandoffError) else ""
+            append_summary(summary, f"- Candidate branch push failed or was inconclusive.{detail}")
+            append_summary(summary, "- Branch creation by this run: unconfirmed.")
         if not attempted_pr:
             append_summary(summary, "- Draft PR request: not run.")
         report_partial_publication(
@@ -1233,6 +1244,10 @@ def main() -> int:
             )
         elif args.command == "ready":
             readiness = record_readiness(args.handoff_root, args.evidence, os.environ)
+            append_summary(
+                Path(os.environ["GITHUB_STEP_SUMMARY"]),
+                f"\n## Release readiness\n\n```json\n{json.dumps(readiness, indent=2)}\n```\n",
+            )
             with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
                 print(f"readiness={json.dumps(readiness, separators=(',', ':'))}", file=output)
         elif args.command == "preflight":
