@@ -174,10 +174,19 @@ readiness** содержит полный JSON готовности. Отчёт 
 подтверждает прохождение этого шага.
 
 В [проверенном запуске по расписанию 45663950280](https://github.com/vovanbl411/noctalia-overlay/actions/runs/45663950280)
-на `cee4a4fb99cf08a39df1d8aa6613d8a8cf397b2c` задание Prepare прошло, а
-Publish было пропущено. Выполнение условных шагов Gentoo осталось
-неизвестным. Этот запуск не подтверждает проверку кандидата по реализации,
-прошедшей техническое ревью.
+на `cee4a4fb99cf08a39df1d8aa6613d8a8cf397b2c` задание Prepare завершилось
+успешно. По данным GitHub jobs API, задание Publish и каждый из
+перечисленных ниже шагов Prepare получили статус `SKIPPED`.
+
+- `Create sanitized overlay workspace`
+- `Prepare the release rotation`
+- `Generate Manifest and run pkgcheck`
+- `Create release handoff`
+- `Upload release handoff`
+- `Mark release handoff ready`
+
+Этот запуск не подтверждает проверку кандидата по реализации, прошедшей
+техническое ревью.
 
 ## Публикация и восстановление
 

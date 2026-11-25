@@ -80,12 +80,12 @@ Meson. Чтобы отключить и зависимость, и функци�
 (`sys-power/upower`), автоматической вставки из буфера (`gui-apps/wtype`) и
 аппаратно ускоренной записи экрана (`media-video/gpu-screen-recorder`).
 
-Для отката укажите точную резервную версию из таблицы выше. Сначала проверьте
-план отката, затем установите пакет. В командах ниже пример для `5.5.0`.
+Замените `<fallback-version>` на точную резервную версию из сгенерированной
+таблицы выше. Сначала проверьте план отката, затем установите пакет.
 
 ```bash
-doas emerge -pv '=gui-apps/noctalia-5.5.0::noctalia-overlay'
-doas emerge --ask --oneshot '=gui-apps/noctalia-5.5.0::noctalia-overlay'
+doas emerge -pv '=gui-apps/noctalia-<fallback-version>::noctalia-overlay'
+doas emerge --ask --oneshot '=gui-apps/noctalia-<fallback-version>::noctalia-overlay'
 ```
 
 После смены версии проверьте `noctalia --version` и сценарии Niri ниже.

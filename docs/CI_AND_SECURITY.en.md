@@ -170,8 +170,17 @@ describe different states. A successful job with a skipped gate does not
 supply evidence for that gate.
 
 The [audited scheduled run 45663950280](https://github.com/vovanbl411/noctalia-overlay/actions/runs/45663950280)
-on `cee4a4fb99cf08a39df1d8aa6613d8a8cf397b2c` showed a successful Prepare
-job and skipped Publish. Execution of the conditional Gentoo steps was unknown.
+on `cee4a4fb99cf08a39df1d8aa6613d8a8cf397b2c` had a successful Prepare
+job. The GitHub jobs API reports `SKIPPED` for Publish and each Prepare
+step listed below.
+
+- `Create sanitized overlay workspace`
+- `Prepare the release rotation`
+- `Generate Manifest and run pkgcheck`
+- `Create release handoff`
+- `Upload release handoff`
+- `Mark release handoff ready`
+
 That run supplies no hosted candidate evidence for the reviewed implementation.
 
 ## Publication and recovery

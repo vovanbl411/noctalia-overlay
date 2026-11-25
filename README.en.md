@@ -77,12 +77,12 @@ suggests optional tools for display brightness (`app-misc/ddcutil`), battery
 and power devices (`sys-power/upower`), clipboard auto-paste (`gui-apps/wtype`),
 and hardware-accelerated recording (`media-video/gpu-screen-recorder`).
 
-To roll back, use the exact fallback version in the table above. Preview the
-downgrade before installing. These commands use `5.5.0` as an example.
+Replace `<fallback-version>` with the exact fallback version from the generated
+table above. Preview the downgrade before installing.
 
 ```bash
-doas emerge -pv '=gui-apps/noctalia-5.5.0::noctalia-overlay'
-doas emerge --ask --oneshot '=gui-apps/noctalia-5.5.0::noctalia-overlay'
+doas emerge -pv '=gui-apps/noctalia-<fallback-version>::noctalia-overlay'
+doas emerge --ask --oneshot '=gui-apps/noctalia-<fallback-version>::noctalia-overlay'
 ```
 
 Check `noctalia --version` and the Niri scenarios below after switching
