@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 import tempfile
 import unittest
@@ -48,10 +47,32 @@ class PrepareNoctaliaReleaseTests(unittest.TestCase):
     def stable_filenames(self) -> list[str]:
         return sorted(path.name for path in (self.root / "gui-apps" / "noctalia").glob("*.ebuild"))
 
-    def test_rotation_removes_oldest_and_retains_previous_current(self) -> None:
-        result = PREPARE.prepare_release(self.root, (5, 2, 0), dry_run=False)
+    def run_rotation_cli(self, *, dry_run: bool) -> tuple[dict[str, str], str]:
+        output = self.root / "github-output"
+        summary = self.root / "summary"
+        arguments = [
+            str(SCRIPT_PATH),
+            "--repository-root", str(self.root),
+            "--release-tag", "v5.2.0",
+            "--github-output", str(output),
+            "--summary", str(summary),
+        ]
+        if dry_run:
+            arguments.append("--dry-run")
+        with patch.object(sys, "argv", arguments):
+            self.assertEqual(PREPARE.main(), 0)
+        return dict(line.split("=", 1) for line in output.read_text().splitlines()), summary.read_text()
 
-        self.assertEqual(result.outcome, "prepared")
+    def test_rotation_removes_oldest_and_retains_previous_current(self) -> None:
+        outputs, summary = self.run_rotation_cli(dry_run=False)
+
+        self.assertEqual(outputs, {
+            "outcome": "prepared",
+            "removed_version": "5.0.1",
+            "fallback_version": "5.1.0",
+            "candidate_version": "5.2.0",
+        })
+        self.assertIn("`prepared` — Completed rotation", summary)
         self.assertEqual(
             self.stable_filenames(), ["noctalia-5.1.0.ebuild", "noctalia-5.2.0.ebuild"]
         )
@@ -74,78 +95,29 @@ class PrepareNoctaliaReleaseTests(unittest.TestCase):
             if path.is_file()
         }
 
-        result = PREPARE.prepare_release(self.root, (5, 2, 0), dry_run=True)
+        outputs, summary = self.run_rotation_cli(dry_run=True)
 
         after = {
             path.relative_to(self.root): path.read_bytes()
             for path in self.root.rglob("*")
-            if path.is_file()
+            if path.is_file() and path.name not in {"github-output", "summary"}
         }
-        self.assertEqual(result.outcome, "dry-run")
+        self.assertEqual(outputs, {
+            "outcome": "dry-run",
+            "removed_version": "5.0.1",
+            "fallback_version": "5.1.0",
+            "candidate_version": "5.2.0",
+        })
+        self.assertIn("`dry-run` — Planned rotation (package files unchanged)", summary)
         self.assertEqual(after, before)
 
     def test_second_run_is_up_to_date_after_rotation(self) -> None:
         PREPARE.prepare_release(self.root, (5, 2, 0), dry_run=False)
 
-        result = PREPARE.prepare_release(self.root, (5, 2, 0), dry_run=False)
+        outputs, summary = self.run_rotation_cli(dry_run=False)
 
-        self.assertEqual(result.outcome, "up-to-date")
-
-    def test_draft_pull_request_body_marks_packaging_review(self) -> None:
-        rotation = PREPARE.plan_rotation(self.root, (5, 2, 0))
-        assert rotation is not None
-
-        body = PREPARE.draft_pull_request_body(
-            "v5.2.0",
-            "https://github.com/noctalia-dev/noctalia/releases/tag/v5.2.0",
-            rotation,
-            {
-                "packaging_md": "modified",
-                "meson_build": "unchanged",
-                "meson_options": "not present",
-            },
+        self.assertEqual(outputs, {"outcome": "up-to-date"})
+        self.assertIn("`up-to-date`", summary)
+        self.assertEqual(
+            self.stable_filenames(), ["noctalia-5.1.0.ebuild", "noctalia-5.2.0.ebuild"]
         )
-
-        self.assertIn("**PACKAGING.md:** modified", body)
-        self.assertIn("- [ ] Test network integration, audio, and the lock screen.", body)
-
-    def test_cli_writes_draft_pull_request_request(self) -> None:
-        watcher_result = self.root / "watcher-result.json"
-        request_path = self.root / "pull-request.json"
-        watcher_result.write_text(
-            json.dumps(
-                {
-                    "release": {
-                        "tag": "v5.2.0",
-                        "url": "https://github.com/noctalia-dev/noctalia/releases/tag/v5.2.0",
-                    },
-                    "packaging_changes": {
-                        "packaging_md": "modified",
-                        "meson_build": "unchanged",
-                        "meson_options": "not present",
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
-
-        with patch.object(
-            sys,
-            "argv",
-            [
-                "prepare_noctalia_release.py",
-                "--repository-root",
-                str(self.root),
-                "--release-tag",
-                "v5.2.0",
-                "--watch-result",
-                str(watcher_result),
-                "--pull-request-request",
-                str(request_path),
-            ],
-        ):
-            self.assertEqual(PREPARE.main(), 0)
-
-        request = json.loads(request_path.read_text(encoding="utf-8"))
-        self.assertTrue(request["draft"])
-        self.assertEqual(request["head"], "automation/noctalia-v5.2.0")

@@ -2,15 +2,11 @@
 
 [English](README.en.md)
 
-Оверлей позволяет сопровождать стабильные релизы Noctalia до их появления
-в GURU. Live-версии `9999` в оверлее нет.
+Оверлей для Gentoo позволяет устанавливать стабильные релизы Noctalia до их
+появления в GURU. Noctalia — оболочка для Wayland. Для ручной проверки
+релизов в этом оверлее используют Niri.
 
-В `main` хранятся ровно две стабильные версии Noctalia, текущая и предыдущая
-для отката. В одном release PR добавляется кандидат, текущая версия остаётся
-резервной, прежняя резервная удаляется, а таблицы версий в обоих README
-обновляются. Владелец принимает ротацию, когда вручную сливает PR.
-
-## Содержимое
+## Пакеты
 
 <!-- noctalia-versions:start -->
 | Пакет | Назначение |
@@ -19,18 +15,15 @@
 | `gui-apps/noctalia-5.5.0` | Предыдущая версия для отката |
 <!-- noctalia-versions:end -->
 
-Оверлей наследует eclass'ы из основного репозитория Gentoo и использует его
-профили. У ebuild Noctalia указан только `KEYWORDS="~amd64"`. Оставьте запись
-`gui-apps/noctalia ~amd64` в `package.accept_keywords`. У оверлея нет отдельного
-профиля Gentoo или результатов проверки по матрице других профилей и архитектур.
-Noctalia работает под Wayland. Ручная проверка релиза выполняется в Niri.
+В `main` хранятся ровно два стабильных ebuild Noctalia. Live-версии
+`9999` нет. Отдельный пакет `virtual/notification-daemon` позволяет
+Portage учитывать установленную Noctalia как поставщика уведомлений
+при определённых USE-флагах.
 
-Подробная схема CI, branch protection и repository security settings описана в
-[`docs/CI_AND_SECURITY.md`](docs/CI_AND_SECURITY.md).
+## Подключение
 
-## Подключение и синхронизация
-
-Файл: `/etc/portage/repos.conf/noctalia-overlay.conf`
+Создайте файл `/etc/portage/repos.conf/noctalia-overlay.conf` со следующим
+содержимым.
 
 ```ini
 [noctalia-overlay]
@@ -41,154 +34,89 @@ auto-sync = yes
 priority = 50
 ```
 
-После сохранения конфигурации выполнить первую синхронизацию:
-
 ```bash
 doas emaint sync -r noctalia-overlay
 ```
 
-Portage сам клонирует репозиторий в
-`/var/db/repos/noctalia-overlay`, если каталог ещё не существует. При
-следующих вызовах та же команда получает изменения из Git.
+`-r` выбирает этот репозиторий. При первом запуске Portage клонирует его в
+указанный каталог, при следующих — обновляет локальную копию. С
+`auto-sync = yes` оверлей также обновляется при явном запуске
+`doas emerge --sync` или `doas emaint sync --auto`. Приоритет `50` обычно
+ставит оверлей выше GURU. Оставьте GURU подключённым для других пакетов.
 
-Проверить, что выбран пакет из данного оверлея, а не GURU:
+## Установка и USE-флаги
+
+Оверлей использует eclass и профили основного репозитория Gentoo.
+Noctalia имеет только keyword `~amd64`. Добавьте
+`gui-apps/noctalia ~amd64` в `package.accept_keywords`.
 
 ```bash
 doas emerge -pv gui-apps/noctalia
-```
-
-Оверлей имеет более высокий приоритет, чем GURU, но GURU не стоит отключать:
-он остаётся источником других пакетов.
-
-`auto-sync = yes` включает оверлей в общий `doas emerge --sync` и
-`doas emaint sync --auto`. Эта опция не создаёт фоновый таймер: синхронизация
-происходит только при явном запуске одной из этих команд.
-
-## Установка и откат Noctalia
-
-Синхронизируйте оверлей, разрешите keyword и установите пакет.
-
-```bash
 doas emerge --ask gui-apps/noctalia::noctalia-overlay
 ```
 
-У ebuild один собственный USE-флаг, `+jemalloc`. По умолчанию он включён,
-добавляет зависимость `dev-libs/jemalloc:=` и включает соответствующую функцию
-Meson. Чтобы отключить и зависимость, и функцию, укажите `-jemalloc` в
-`package.use`. Ebuild также предлагает дополнительные пакеты для управления
-яркостью (`app-misc/ddcutil`), батареей и устройствами питания
-(`sys-power/upower`), автоматической вставки из буфера (`gui-apps/wtype`) и
-аппаратно ускоренной записи экрана (`media-video/gpu-screen-recorder`).
+Первая команда показывает план установки и зависимости. В `-pv` флаг
+`-p` включает предварительный просмотр, а `-v` показывает подробности.
+Убедитесь, что Portage выбрал `::noctalia-overlay`. Во второй команде
+этот суффикс задаёт источник пакета, а `--ask` запрашивает
+подтверждение перед установкой.
 
-Замените `<fallback-version>` на точную резервную версию из сгенерированной
-таблицы выше. Сначала проверьте план отката, затем установите пакет.
+USE-флаг `+jemalloc` включён по умолчанию. Он добавляет зависимость
+`dev-libs/jemalloc:=` и включает соответствующую функцию в Meson.
+Запись `gui-apps/noctalia -jemalloc` в `package.use` отключает обе части.
+В [ebuild](gui-apps/noctalia/) также перечислены необязательные инструменты
+для яркости (`app-misc/ddcutil`), питания (`sys-power/upower`),
+автовставки из буфера (`gui-apps/wtype`) и аппаратной записи экрана
+(`media-video/gpu-screen-recorder`).
+
+## Уведомления
+
+Локальный [virtual](virtual/notification-daemon/) сохраняет поставщиков,
+KEYWORDS и правила Gentoo для USE-флагов `gnome` и `kde`. При выключенных
+`gnome` и `kde` в список допустимых поставщиков добавляется
+`gui-apps/noctalia`. Установленная Noctalia может закрыть зависимость без
+установки второго демона и без записи в `package.provided`. Этот пакет
+сопровождается вручную.
+
+```bash
+emerge -pv virtual/notification-daemon
+```
+
+При `USE="-gnome -kde"` и установленной Noctalia ожидайте в плане
+`virtual/notification-daemon-0-r1::noctalia-overlay` без установки
+`x11-misc/notification-daemon` и без требований `USE=X` для `gtk+` и
+`cairo`. Если при переходе на этот virtual сохранилась временная запись
+`virtual/notification-daemon-0` в `/etc/portage/profile/package.provided`,
+удалите только её и повторите предварительную проверку. [Историческое
+наблюдение о D-Bus и Thunderbird](docs/CI_AND_SECURITY.md#исторические-наблюдения)
+
+## Обновление и откат
+
+Для обновления повторите синхронизацию и команды установки.
+Для отката подставьте версию из строки «Предыдущая версия для отката» в
+таблице пакетов.
 
 ```bash
 doas emerge -pv '=gui-apps/noctalia-<fallback-version>::noctalia-overlay'
 doas emerge --ask --oneshot '=gui-apps/noctalia-<fallback-version>::noctalia-overlay'
 ```
 
-После смены версии проверьте `noctalia --version` и сценарии Niri ниже.
-Следующее обновление world может снова выбрать более новую версию.
+`=` фиксирует версию. Сначала проверьте план, затем подтвердите установку.
+`--oneshot` оставляет набор world без изменений. Следующее обновление world
+может снова выбрать текущую версию.
 
-## Интеграция уведомлений с Portage
+После обновления или отката проверьте `noctalia --version`, затем панель,
+уведомления, сеть, звук и блокировку экрана в обычной сессии Niri.
 
-На тестовой рабочей станции Noctalia 5.2.1 предоставляла D-Bus-сервис
-`org.freedesktop.Notifications` и показывала внешние уведомления, в том числе
-из Thunderbird. Это наблюдение относится к указанным версии и машине.
+## Проверки и сопровождение
 
-На 2026-10-07 ebuild пакета
-[`::gentoo virtual/notification-daemon-0`](https://github.com/gentoo/gentoo/blob/master/virtual/notification-daemon/notification-daemon-0.ebuild)
-не указывал Noctalia среди провайдеров. В той конфигурации `x11-libs/libnotify` с
-`PDEPEND="virtual/notification-daemon"` выбирает другой notification daemon.
-Стандартный fallback на `x11-misc/notification-daemon` тянет X11 stack через
-`gtk+[X]`, `cairo[X]` и `libXcursor`, что нежелательно для Wayland-only системы.
+CI репозитория запускает unit-тесты автоматизации. При полном прогоне
+подготовки кандидата проверяются архив, Manifest и метаданные Gentoo.
+Проверки зависимостей, сборки и работы сеанса выполняют отдельно.
+Оверлей не заявляет матрицу проверок для других профилей и архитектур.
+Доказательства для конкретного кандидата ищите в его PR и отчёте Prepare.
 
-Локальный `virtual/notification-daemon-0-r1` сохраняет upstream providers,
-KEYWORDS и семантику USE-флагов `gnome`/`kde`, добавляя `gui-apps/noctalia` в
-fallback OR-group при `!gnome` и `!kde`. Ревизия `0-r1` новее upstream `0`:
-при установленной Noctalia Portage может удовлетворить dependency без второго
-daemon и без `package.provided`. Этот virtual сопровождается вручную и не
-участвует в rotation двух версий Noctalia.
-
-После синхронизации оверлея и перехода на local virtual временная запись
-`virtual/notification-daemon-0` в `/etc/portage/profile/package.provided`
-больше не нужна. Удалите только эту запись и проверьте resolver:
-
-```bash
-emerge -pv virtual/notification-daemon
-```
-
-При `USE="-gnome -kde"` и установленной Noctalia должен выбираться
-`virtual/notification-daemon-0-r1::noctalia-overlay` без
-`x11-misc/notification-daemon` и без требования включить `USE=X` для `gtk+`
-или `cairo`.
-
-На reference workstation `x11-libs/libnotify` остаётся explicit world package:
-текущий Gentoo ebuild Thunderbird лишь предлагает его через
-`optfeature "desktop notifications"`, а обязательного `RDEPEND` на него нет.
-Собственный Thunderbird ebuild ради этой dependency не сопровождается.
-
-## Проверка release PR
-
-Перед слиянием выполните [проверки приёмки](docs/CI_AND_SECURITY.md#приёмка-владельцем).
-Сверьте точный коммит PR и базу `main`, изменения ebuild и Manifest, изменения
-и происхождение upstream-релиза, отчёт Prepare по ссылке из PR и обязательную
-проверку CI. Выполните `doas emerge -pv gui-apps/noctalia`, установите кандидата
-из ветки PR и проверьте обычную сессию Niri. Перед ручным слиянием проверьте
-панель, уведомления, сеть, звук и блокировку экрана.
-
-## Автоматизация релизов
-
-[Prepare Noctalia release](.github/workflows/noctalia-release-watcher.yml)
-запускается ежедневно в 06:17 UTC или вручную через `workflow_dispatch`.
-GitHub может задержать запуск по расписанию или отключить расписание
-в публичном репозитории после 60 дней без активности. В этих случаях
-доступен ручной запуск.
-
-[`scripts/watch_noctalia_release.py`](scripts/watch_noctalia_release.py)
-проверяет последний стабильный релиз на GitHub, определяет коммит по тегу,
-сверяет `VERSION` в этом коммите и ищет открытые PR для релиза. Подпись тега,
-если она есть, дополняет сведения о происхождении. Допускаются и релизы без
-подписи. [`scripts/prepare_noctalia_release.py`](scripts/prepare_noctalia_release.py)
-копирует текущий ebuild, удаляет прежний резервный и обновляет обе таблицы
-версий в изолированной рабочей копии. Workflow проверяет канонический архив
-тега, создаёт и сверяет Manifest и запускает `pkgcheck scan --exit` в Gentoo.
-В Draft PR перечислены изменения upstream-файлов `PACKAGING.md`, `meson.build`
-и `meson_options.txt`. Там же указаны ссылка на запуск workflow и номер
-проверенной попытки Prepare.
-
-При `dry_run=true` workflow выполняет поиск релиза, проверяет политику,
-показывает план ротации и запускает unit-тесты. Проверки архива и Gentoo,
-а также публикация пропускаются. Только задание Publish получает права записи
-в репозиторий. Оно проверяет handoff и удалённую базу, создаёт ветку кандидата
-при её отсутствии и открывает Draft PR для ручной приёмки. Проверки источника,
-права, повторные запуски и восстановление описаны в
-[руководстве по CI и безопасности](docs/CI_AND_SECURITY.md).
-
-Образы Gentoo закреплены по SHA-256 и обновляются вручную. Dependabot обновляет
-только GitHub Actions.
-
-## Локальные тесты
-
-Запускайте из корня рабочей копии оверлея с Python 3 и Git в `PATH`. Тесты
-используют стандартную библиотеку Python и временные локальные
-Git-репозитории. Для них не нужны сеть и Portage.
-
-```bash
-python3 -m unittest discover -s tests
-```
-
-[CI](.github/workflows/ci.yml) запускает этот набор unit-тестов. Для ручных
-изменений `virtual/notification-daemon/` выполните в Gentoo `pkgcheck scan` и
-`emerge -pv virtual/notification-daemon`. Эти проверки выполняются отдельно
-от общего CI и ротации Noctalia.
-
-## Проверка после обновления
-
-```bash
-noctalia --version
-```
-
-Проверить также панель, уведомления, сеть, звук и блокировку экрана в обычной
-сессии Niri.
+Автоматизация готовит ротацию и открывает Draft PR для нового стабильного
+релиза. Владелец проверяет кандидата и принимает обновление ручным слиянием.
+Сопровождающим доступны [пошаговый разбор автоматизации](docs/AUTOMATION.md)
+и [справочник CI, безопасности и восстановления](docs/CI_AND_SECURITY.md).

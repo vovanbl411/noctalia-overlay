@@ -91,7 +91,9 @@ class WatchResult:
 class ReleaseClient(Protocol):
     def latest_release(self) -> Release: ...
 
-    def pull_request_exists(self, title: str, branch: str) -> bool: ...
+    def has_open_pull_request_matching_title(self, title: str) -> bool: ...
+
+    def pull_requests_for_head(self, branch: str, *, state: str) -> list[dict]: ...
 
     def tag_ref(self, tag: str) -> dict[str, Any]: ...
 
@@ -119,7 +121,7 @@ class GitHubClient:
     def latest_release(self) -> Release:
         return parse_stable_release(self._request_json(LATEST_RELEASE_URL))
 
-    def pull_request_exists(self, title: str, branch: str) -> bool:
+    def has_open_pull_request_matching_title(self, title: str) -> bool:
         query = f'repo:{self._repository} is:pr is:open in:title "{title}"'
         payload = self._request_json(
             f"{SEARCH_API_URL}?{urlencode({'q': query, 'per_page': 1})}"
@@ -140,7 +142,7 @@ class GitHubClient:
             )
         ):
             raise WatcherError("GitHub pull request search response is incomplete or malformed.")
-        return total_count > 0 or bool(self.pull_requests_for_head(branch, state="open"))
+        return total_count > 0
 
     def pull_requests_for_head(self, branch: str, *, state: str = "all") -> list[dict]:
         """Check an exact same-repository head, including closed PRs when requested."""
@@ -562,8 +564,11 @@ def watch(
     state = validate_overlay(repository_root)
     if state.current.version >= release.version:
         return WatchResult("up-to-date", state.current.version, release, provenance)
-    if client.pull_request_exists(
-        draft_pull_request_title(release), draft_pull_request_branch(release)
+    title = draft_pull_request_title(release)
+    branch = draft_pull_request_branch(release)
+    if (
+        client.has_open_pull_request_matching_title(title)
+        or client.pull_requests_for_head(branch, state="open")
     ):
         return WatchResult("already-reported", state.current.version, release, provenance)
 
