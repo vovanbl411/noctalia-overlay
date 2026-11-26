@@ -309,7 +309,7 @@ def main() -> int:
             )
         return 0
     except (OverlayPolicyError, WatcherError, OSError, UnicodeError) as error:
-        print(f"Release handoff error: {error}", file=sys.stderr)
+        print(f"Release publication error: {error}", file=sys.stderr)
         return 1
 
 
